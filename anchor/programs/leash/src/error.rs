@@ -1,0 +1,53 @@
+use anchor_lang::prelude::*;
+
+#[error_code]
+pub enum LeashError {
+    #[msg("INVALID_CLEARANCE")]
+    InvalidClearance,
+    #[msg("MISSING_CLEARANCE")]
+    MissingClearance,
+    #[msg("EXPIRED_CLEARANCE")]
+    ExpiredClearance,
+    #[msg("CLEARANCE_MISMATCH")]
+    ClearanceMismatch,
+    #[msg("MANDATE_REVOKED")]
+    MandateRevoked,
+    #[msg("MANDATE_EXPIRED")]
+    MandateExpired,
+    #[msg("BUDGET_EXCEEDED")]
+    BudgetExceeded,
+    #[msg("PAYMENT_LIMIT_EXCEEDED")]
+    PaymentLimitExceeded,
+    #[msg("USE_LIMIT_REACHED")]
+    UseLimitReached,
+    #[msg("CORRIDOR_BLOCKED")]
+    CorridorBlocked,
+    #[msg("CORRIDOR_NOT_ALLOWED")]
+    CorridorNotAllowed,
+    #[msg("DAILY_CAP_EXCEEDED")]
+    DailyCapExceeded,
+    #[msg("PACKET_REQUIRED")]
+    PacketRequired,
+    #[msg("POLICY_VERSION_MISMATCH")]
+    PolicyVersionMismatch,
+    #[msg("CHECKS_FAILED")]
+    ChecksFailed,
+    #[msg("BAD_STATE")]
+    BadState,
+    #[msg("REFUND_TOO_EARLY")]
+    RefundTooEarly,
+    #[msg("UNAUTHORIZED")]
+    Unauthorized,
+    #[msg("INVALID_AMOUNT")]
+    InvalidAmount,
+    #[msg("SELF_PAYMENT")]
+    SelfPayment,
+    #[msg("TOO_MANY_CORRIDORS")]
+    TooManyCorridors,
+    #[msg("MINT_MISMATCH")]
+    MintMismatch,
+    #[msg("FX_MISMATCH")]
+    FxMismatch,
+    #[msg("INVALID_WINDOW")]
+    InvalidWindow,
+}

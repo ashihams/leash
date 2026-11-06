@@ -4,8 +4,11 @@
 resolution = true
 skip-lint = false
 
+[programs.localnet]
+leash = "8Eq2Ug3URR5ugzDfjYk4bbkBJa8o7U6YZtPp6vLDHezd"
+
 [programs.devnet]
-vault = "F4jZpgbtTb6RWNWq6v35fUeiAsRJMrDczVPv9U23yXjB"
+leash = "8Eq2Ug3URR5ugzDfjYk4bbkBJa8o7U6YZtPp6vLDHezd"
 
 [provider]
 cluster = "devnet"
