@@ -50,4 +50,10 @@ pub enum LeashError {
     FxMismatch,
     #[msg("INVALID_WINDOW")]
     InvalidWindow,
+    #[msg("DELIVERY_LATE")]
+    DeliveryLate,
+    #[msg("BAD_RECEIPT")]
+    BadReceipt,
+    #[msg("ACCEPTANCE_CLOSED")]
+    AcceptanceClosed,
 }

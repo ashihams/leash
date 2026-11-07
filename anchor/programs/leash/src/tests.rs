@@ -40,6 +40,7 @@ struct Env {
     agent: Keypair,
     vendor: Keypair,
     policy: Keypair,
+    verifier: Keypair,
     mint: Pubkey,
     mandate: Pubkey,
 }
@@ -273,6 +274,56 @@ fn refund_ix(env: &Env, payment: [u8; 32]) -> Instruction {
     )
 }
 
+fn delivery_artifact() -> Vec<u8> {
+    b"DLV1north-studio-logo".to_vec()
+}
+
+fn delivery_hash() -> [u8; 32] {
+    solana_sha256_hasher::hash(&delivery_artifact()).to_bytes()
+}
+
+fn submit_delivery_ix(env: &Env, payment: [u8; 32], receipt_hash: [u8; 32]) -> Instruction {
+    let mut args = payment.pack();
+    args.extend(MANDATE_ID.pack());
+    args.extend(receipt_hash.pack());
+    ix(
+        "submit_delivery",
+        args,
+        vec![
+            AccountMeta::new_readonly(env.vendor.pubkey(), true),
+            AccountMeta::new_readonly(env.owner.pubkey(), false),
+            AccountMeta::new_readonly(env.mandate, false),
+            AccountMeta::new(pda(&[b"escrow", &payment]), false),
+        ],
+    )
+}
+
+fn verify_ix(env: &Env, payment: [u8; 32], artifact: &[u8]) -> Instruction {
+    let mut args = payment.pack();
+    args.extend(artifact.pack());
+    ix(
+        "verify_delivery",
+        args,
+        vec![
+            AccountMeta::new_readonly(env.verifier.pubkey(), true),
+            AccountMeta::new_readonly(pda(&[b"config"]), false),
+            AccountMeta::new(pda(&[b"escrow", &payment]), false),
+        ],
+    )
+}
+
+fn mark_delivered(env: &mut Env, payment: [u8; 32]) {
+    let receipt = delivery_hash();
+    let ix = submit_delivery_ix(env, payment, receipt);
+    must(send(&mut env.svm, &env.vendor, &[ix], &[&env.vendor]));
+}
+
+fn mark_verified(env: &mut Env, payment: [u8; 32]) {
+    let artifact = delivery_artifact();
+    let ix = verify_ix(env, payment, &artifact);
+    must(send(&mut env.svm, &env.verifier, &[ix], &[&env.verifier]));
+}
+
 fn fund(
     env: &mut Env,
     signed: &crate::Clearance,
@@ -292,9 +343,12 @@ fn setup() -> Env {
     let agent = Keypair::new();
     let vendor = Keypair::new();
     let policy = Keypair::new();
+    let verifier = Keypair::new();
     let mint = Keypair::new();
     svm.airdrop(&owner.pubkey(), 20 * SOL).unwrap();
     svm.airdrop(&agent.pubkey(), 20 * SOL).unwrap();
+    svm.airdrop(&vendor.pubkey(), 2 * SOL).unwrap();
+    svm.airdrop(&verifier.pubkey(), 2 * SOL).unwrap();
 
     let mint_rent = svm.minimum_balance_for_rent_exemption(82);
     let mut init_mint = vec![20, 6];
@@ -343,6 +397,7 @@ fn setup() -> Env {
     ));
 
     let mut initialize = policy.pubkey().pack();
+    initialize.extend(verifier.pubkey().pack());
     initialize.extend(1u64.pack());
     initialize.extend(REQUIRED.pack());
     must(send(
@@ -450,6 +505,7 @@ fn setup() -> Env {
         agent,
         vendor,
         policy,
+        verifier,
         mint: mint.pubkey(),
         mandate,
     }
@@ -507,6 +563,26 @@ fn funds_releases_and_rejects_a_second_release() {
 
     let release_clearance = clearance(&env, KIND_RELEASE, DECISION_ALLOW, payment, PAYMENT, vendor, env.mint);
     let message = crate::encode(&release_clearance);
+    let ed = ed25519_ix(&message, &env.policy);
+    let release = release_ix(&env, payment, &vendor);
+    assert_msg(
+        send(&mut env.svm, &env.agent, &[ed, release], &[&env.agent]).unwrap_err(),
+        "BAD_STATE",
+    );
+
+    env.svm.expire_blockhash();
+    mark_delivered(&mut env, payment);
+    assert_eq!(load_escrow(&env.svm, &payment).state, EscrowState::Delivered);
+    let bad = b"DLV1not-the-receipt".to_vec();
+    let bad_ix = verify_ix(&env, payment, &bad);
+    assert_msg(
+        send(&mut env.svm, &env.verifier, &[bad_ix], &[&env.verifier]).unwrap_err(),
+        "BAD_RECEIPT",
+    );
+    mark_verified(&mut env, payment);
+    assert_eq!(load_escrow(&env.svm, &payment).state, EscrowState::Verified);
+
+    env.svm.expire_blockhash();
     let ed = ed25519_ix(&message, &env.policy);
     let release = release_ix(&env, payment, &vendor);
     must(send(&mut env.svm, &env.agent, &[ed, release], &[&env.agent]));
@@ -594,6 +670,8 @@ fn disabled_corridor_blocks_release_and_owner_can_refund_after_deadline() {
     let vendor = env.vendor.pubkey();
     let signed = clearance(&env, KIND_FUND, DECISION_ALLOW, payment, PAYMENT, vendor, env.mint);
     must(fund(&mut env, &signed, vendor));
+    mark_delivered(&mut env, payment);
+    mark_verified(&mut env, payment);
 
     let mut update = Vec::new();
     update.extend(FROM.pack());
@@ -623,7 +701,7 @@ fn disabled_corridor_blocks_release_and_owner_can_refund_after_deadline() {
     let release = release_ix(&env, payment, &vendor);
     let err = send(&mut env.svm, &env.agent, &[ed, release], &[&env.agent]).unwrap_err();
     assert_msg(err, "CORRIDOR_BLOCKED");
-    assert_eq!(load_escrow(&env.svm, &payment).state, EscrowState::Funded);
+    assert_eq!(load_escrow(&env.svm, &payment).state, EscrowState::Verified);
 
     let refund = refund_ix(&env, payment);
     assert_msg(send(&mut env.svm, &env.owner, &[refund], &[&env.owner]).unwrap_err(), "REFUND_TOO_EARLY");
