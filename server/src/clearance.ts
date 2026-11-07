@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import nacl from "tweetnacl";
-import { concat, countryBytes, isZero } from "./bytes.ts";
+import { countryBytes, isZero } from "./bytes.ts";
+export { intentMessage } from "./intent.ts";
 
 export const CLEARANCE_LEN = 288;
 export const VERSION = 1;
@@ -124,43 +125,6 @@ export function packetMissing(
   return threshold > 0 && amount >= threshold && isZero(packetHash);
 }
 
-export function intentMessage(input: {
-  kind: number;
-  paymentId: Uint8Array;
-  mandate: Uint8Array;
-  buyer: Uint8Array;
-  vendor: Uint8Array;
-  mint: Uint8Array;
-  amount: number;
-  fromCountry: string;
-  toCountry: string;
-  category: number;
-  purposeCode: number;
-  invoiceHash: Uint8Array;
-  invoiceAmount: number;
-}): Uint8Array {
-  const amount = u64(input.amount);
-  const invoiceAmount = u64(input.invoiceAmount);
-  const category = u16(input.category);
-  const purpose = u16(input.purposeCode);
-  return concat([
-    Buffer.from("LEASH_INTENT_V1"),
-    Uint8Array.of(input.kind),
-    input.paymentId,
-    input.mandate,
-    input.buyer,
-    input.vendor,
-    input.mint,
-    amount,
-    countryBytes(input.fromCountry),
-    countryBytes(input.toCountry),
-    category,
-    purpose,
-    input.invoiceHash,
-    invoiceAmount,
-  ]);
-}
-
 function write(
   out: Uint8Array,
   offset: number,
@@ -169,16 +133,4 @@ function write(
 ) {
   if (bytes.length !== length) throw new Error("BAD_WIDTH");
   out.set(bytes, offset);
-}
-
-function u64(value: number): Uint8Array {
-  const out = new Uint8Array(8);
-  new DataView(out.buffer).setBigUint64(0, BigInt(value), true);
-  return out;
-}
-
-function u16(value: number): Uint8Array {
-  const out = new Uint8Array(2);
-  new DataView(out.buffer).setUint16(0, value, true);
-  return out;
 }

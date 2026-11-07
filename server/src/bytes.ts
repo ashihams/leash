@@ -45,14 +45,20 @@ export function decodeBase58(value: string): Uint8Array {
 }
 
 export function encodeHex(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("hex");
+  let out = "";
+  for (const byte of bytes) out += byte.toString(16).padStart(2, "0");
+  return out;
 }
 
 export function decodeHex(value: string, length: number): Uint8Array {
   if (value.length !== length * 2 || !/^[0-9a-f]+$/.test(value)) {
     throw new Error("BAD_HEX");
   }
-  return Uint8Array.from(Buffer.from(value, "hex"));
+  const out = new Uint8Array(length);
+  for (let i = 0; i < length; i++) {
+    out[i] = Number.parseInt(value.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
 }
 
 export function zeros(length: number): Uint8Array {
@@ -75,5 +81,5 @@ export function concat(parts: Uint8Array[]): Uint8Array {
 
 export function countryBytes(code: string): Uint8Array {
   if (!/^[A-Z]{2}$/.test(code)) throw new Error("BAD_COUNTRY");
-  return Uint8Array.from(Buffer.from(code, "ascii"));
+  return new TextEncoder().encode(code);
 }
