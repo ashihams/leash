@@ -5,6 +5,7 @@ use anchor_lang::prelude::*;
 pub struct Config {
     pub admin: Pubkey,
     pub policy_signer: Pubkey,
+    pub verifier: Pubkey,
     pub usdc_mint: Pubkey,
     pub policy_version: u64,
     pub required_checks: u32,

@@ -31,13 +31,17 @@ pub mod leash {
     pub fn initialize(
         ctx: Context<Initialize>,
         policy_signer: Pubkey,
+        verifier: Pubkey,
         policy_version: u64,
         required_checks: u32,
     ) -> Result<()> {
         require!(policy_version > 0, LeashError::InvalidAmount);
+        require!(verifier != policy_signer, LeashError::Unauthorized);
+        require!(verifier != ctx.accounts.admin.key(), LeashError::Unauthorized);
         let config = &mut ctx.accounts.config;
         config.admin = ctx.accounts.admin.key();
         config.policy_signer = policy_signer;
+        config.verifier = verifier;
         config.usdc_mint = ctx.accounts.usdc_mint.key();
         config.policy_version = policy_version;
         config.required_checks = required_checks;
@@ -321,7 +325,70 @@ pub mod leash {
         Ok(())
     }
 
-    /// Release from Funded. Stage 4 tightens this to the verified state.
+    pub fn submit_delivery(
+        ctx: Context<SubmitDelivery>,
+        _payment_id: [u8; 32],
+        mandate_id: u64,
+        receipt_hash: [u8; 32],
+    ) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        require!(
+            ctx.accounts.escrow.state == EscrowState::Funded,
+            LeashError::BadState
+        );
+        require!(
+            now < ctx.accounts.escrow.delivery_deadline,
+            LeashError::DeliveryLate
+        );
+        require!(receipt_hash != [0u8; 32], LeashError::BadReceipt);
+        require!(
+            ctx.accounts.mandate.mandate_id == mandate_id
+                && ctx.accounts.mandate.key() == ctx.accounts.escrow.mandate,
+            LeashError::ClearanceMismatch
+        );
+        let acceptance_deadline = now
+            .checked_add(ctx.accounts.mandate.acceptance_seconds)
+            .ok_or_else(|| error!(LeashError::InvalidWindow))?;
+        let escrow = &mut ctx.accounts.escrow;
+        escrow.receipt_hash = receipt_hash;
+        escrow.acceptance_deadline = acceptance_deadline;
+        escrow.state = EscrowState::Delivered;
+        Ok(())
+    }
+
+    pub fn verify_delivery(
+        ctx: Context<VerifyDelivery>,
+        _payment_id: [u8; 32],
+        artifact: Vec<u8>,
+    ) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        require!(
+            ctx.accounts.escrow.state == EscrowState::Delivered,
+            LeashError::BadState
+        );
+        require!(
+            now < ctx.accounts.escrow.acceptance_deadline,
+            LeashError::AcceptanceClosed
+        );
+        require!(
+            artifact.len() >= RECEIPT_MAGIC.len() && artifact.len() <= MAX_ARTIFACT_LEN,
+            LeashError::BadReceipt
+        );
+        require!(
+            artifact.starts_with(RECEIPT_MAGIC),
+            LeashError::BadReceipt
+        );
+        require!(
+            digest(&artifact) == ctx.accounts.escrow.receipt_hash,
+            LeashError::BadReceipt
+        );
+        let escrow = &mut ctx.accounts.escrow;
+        escrow.verification_hash = digest(&artifact);
+        escrow.state = EscrowState::Verified;
+        Ok(())
+    }
+
+    /// Pay the vendor only after the mechanical verifier has accepted the receipt.
     pub fn release(ctx: Context<Release>, _payment_id: [u8; 32]) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         let (clearance, clearance_hash) = signed_clearance(
@@ -330,10 +397,6 @@ pub mod leash {
         )?;
         require_fresh(&clearance, now, &ctx.accounts.config)?;
         require!(clearance.kind == KIND_RELEASE, LeashError::InvalidClearance);
-        require!(
-            ctx.accounts.escrow.state == EscrowState::Funded,
-            LeashError::BadState
-        );
         require_same_payment(&clearance, &ctx.accounts.escrow)?;
         require!(
             ctx.accounts.escrow_vault.amount == ctx.accounts.escrow.amount,
@@ -341,12 +404,27 @@ pub mod leash {
         );
 
         if clearance.decision == DECISION_DENY {
+            require!(
+                matches!(
+                    ctx.accounts.escrow.state,
+                    EscrowState::Funded | EscrowState::Delivered | EscrowState::Verified
+                ),
+                LeashError::BadState
+            );
             let escrow = &mut ctx.accounts.escrow;
             escrow.state = EscrowState::Disputed;
             escrow.release_clearance_hash = clearance_hash;
             return Ok(());
         }
         require!(clearance.decision == DECISION_ALLOW, LeashError::InvalidClearance);
+        require!(
+            ctx.accounts.escrow.state == EscrowState::Verified,
+            LeashError::BadState
+        );
+        require!(
+            now < ctx.accounts.escrow.acceptance_deadline,
+            LeashError::AcceptanceClosed
+        );
         require!(ctx.accounts.corridor.enabled, LeashError::CorridorBlocked);
 
         let amount = ctx.accounts.escrow.amount;
@@ -372,26 +450,41 @@ pub mod leash {
 
     pub fn refund(mut ctx: Context<Refund>, _payment_id: [u8; 32]) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
-        require!(
-            ctx.accounts.escrow.state == EscrowState::Funded,
-            LeashError::BadState
-        );
-        require!(
-            now >= ctx.accounts.escrow.delivery_deadline,
-            LeashError::RefundTooEarly
-        );
+        match ctx.accounts.escrow.state {
+            EscrowState::Funded => {
+                require!(
+                    now >= ctx.accounts.escrow.delivery_deadline,
+                    LeashError::RefundTooEarly
+                );
+            }
+            EscrowState::Delivered | EscrowState::Verified => {
+                require!(
+                    now >= ctx.accounts.escrow.acceptance_deadline,
+                    LeashError::RefundTooEarly
+                );
+            }
+            _ => return err!(LeashError::BadState),
+        }
         settle_refund(&mut ctx)
     }
 
     pub fn admin_refund(mut ctx: Context<AdminRefund>, _payment_id: [u8; 32]) -> Result<()> {
         require!(
-            ctx.accounts.escrow.state == EscrowState::Funded
-                || ctx.accounts.escrow.state == EscrowState::Disputed,
+            matches!(
+                ctx.accounts.escrow.state,
+                EscrowState::Funded
+                    | EscrowState::Delivered
+                    | EscrowState::Verified
+                    | EscrowState::Disputed
+            ),
             LeashError::BadState
         );
         settle_admin_refund(&mut ctx)
     }
 }
+
+const RECEIPT_MAGIC: &[u8] = b"DLV1";
+const MAX_ARTIFACT_LEN: usize = 256;
 
 fn require_window_country(from_country: [u8; 2], to_country: [u8; 2]) -> Result<()> {
     require!(
@@ -815,6 +908,41 @@ pub struct CreateAndFund<'info> {
     pub instructions: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(payment_id: [u8; 32], mandate_id: u64)]
+pub struct SubmitDelivery<'info> {
+    #[account(address = escrow.vendor)]
+    pub vendor: Signer<'info>,
+    /// CHECK: Mandate owner. Used only as the mandate PDA seed.
+    pub owner: UncheckedAccount<'info>,
+    #[account(
+        seeds = [b"mandate", owner.key().as_ref(), &mandate_id.to_le_bytes()],
+        bump = mandate.bump
+    )]
+    pub mandate: Account<'info, Mandate>,
+    #[account(
+        mut,
+        seeds = [b"escrow", payment_id.as_ref()],
+        bump = escrow.bump
+    )]
+    pub escrow: Account<'info, Escrow>,
+}
+
+#[derive(Accounts)]
+#[instruction(payment_id: [u8; 32])]
+pub struct VerifyDelivery<'info> {
+    #[account(address = config.verifier)]
+    pub verifier: Signer<'info>,
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    #[account(
+        mut,
+        seeds = [b"escrow", payment_id.as_ref()],
+        bump = escrow.bump
+    )]
+    pub escrow: Account<'info, Escrow>,
 }
 
 #[derive(Accounts)]
