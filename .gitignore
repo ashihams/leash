@@ -38,3 +38,7 @@ server/data
 .env.*
 !.env.example
 keys/
+
+# Vercel local link
+.vercel/
+api/generated/

@@ -1,0 +1,8 @@
+node_modules
+anchor/target
+anchor/.anchor
+.git
+server/data
+keys
+dist
+.npm-cache

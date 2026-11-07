@@ -1,0 +1,5 @@
+{
+  "framework": "vite",
+  "buildCommand": "npm run build && node scripts/bundle-gate.mjs",
+  "outputDirectory": "dist"
+}

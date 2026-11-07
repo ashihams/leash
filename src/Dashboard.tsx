@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useWalletConnection } from "@solana/react-hooks";
 import nacl from "tweetnacl";
 import { AccountAccess } from "./AccountAccess";
+import "./dashboard.css";
 import { refreshMetaMask } from "./providers";
-import { Arrow, SiteHeader } from "./ui";
 import {
   base64ToBytes,
   baseToUsdc,
@@ -95,6 +95,9 @@ export function Dashboard() {
   const [walletNote, setWalletNote] = useState("");
   const connectLock = useRef(false);
   const actionLock = useRef(false);
+  const accountButton = useRef<HTMLButtonElement>(null);
+  const accountPanel = useRef<HTMLDivElement>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
   const session = useRef({
     mandateId: 7,
     mandateAccount: "",
@@ -172,6 +175,26 @@ export function Dashboard() {
     }
   }, [connectors]);
 
+  useEffect(() => {
+    if (!accountOpen) return;
+    const panel = accountPanel.current;
+    panel?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAccountOpen(false);
+    };
+    const onPointer = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (panel?.contains(target) || accountButton.current?.contains(target)) return;
+      setAccountOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onPointer);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onPointer);
+    };
+  }, [accountOpen]);
+
   async function checkGate() {
     try {
       await readGate();
@@ -213,7 +236,7 @@ export function Dashboard() {
       toCountry: "US",
       enabled,
       perPaymentCap: usdcToBase(PER_PAYMENT),
-      dailyCap: usdcToBase(1000),
+      dailyCap: usdcToBase(10000),
       packetThreshold: 0,
     });
     if (result.status >= 400) {
@@ -258,7 +281,7 @@ export function Dashboard() {
     const skipped: number[] = [];
     let id = startId;
     try {
-      for (let attempt = 0; attempt < 12; attempt += 1) {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
         const mandate = String(await mandatePda(ownerAddress, id));
         const created = await gate("/mandates", {
           mandateId: id,
@@ -294,7 +317,7 @@ export function Dashboard() {
         push(
           "Mandate open",
           skipped.length > 0
-            ? `${skipped.length === 1 ? `Mandate ${skipped[0]} was` : `Mandates ${skipped.join(", ")} were`} already stored. Mandate ${id} is open for ${who}. Budget ${BUDGET}.00 USDC.`
+            ? `${skippedLabel(skipped)} Mandate ${id} is open for ${who}. Budget ${BUDGET}.00 USDC.`
             : `Mandate ${id} for ${who}. Budget ${BUDGET}.00 USDC.`
         );
         return { id, account: mandate, owner: ownerAddress, mint: activeMint };
@@ -306,7 +329,9 @@ export function Dashboard() {
       );
       return null;
     }
-    push("Mandate", "The gate already has every mandate id this page tried.");
+    session.current.mandateId = id;
+    setMandateId(id);
+    push("Mandate", `${skippedLabel(skipped)} No free mandate id was left in that search.`);
     return null;
   }
 
@@ -395,6 +420,11 @@ export function Dashboard() {
           "Adapt",
           "That amount is outside the leash. The field is back to 100 USDC."
         );
+      } else if (reasons.includes("DAILY_CAP")) {
+        push(
+          "Adapt",
+          "The US to US corridor has already committed its daily amount."
+        );
       } else if (reasons.includes("CORRIDOR_BLOCKED")) {
         push("Adapt", "The corridor is closed. Reopen it, or stop.");
       } else if (reasons.includes("MANDATE_REVOKED")) {
@@ -465,7 +495,7 @@ export function Dashboard() {
         paymentId,
         receiptHash,
       });
-      if (delivered.status >= 400) {
+      if (failed(delivered)) {
         push("Delivery", errorText(delivered));
         return;
       }
@@ -473,7 +503,7 @@ export function Dashboard() {
         paymentId,
         artifact: bytesToBase64(artifact),
       });
-      if (verified.status >= 400) {
+      if (failed(verified)) {
         push("Verifier", errorText(verified));
         return;
       }
@@ -587,294 +617,703 @@ export function Dashboard() {
     await ask();
   }
 
+  function retryFailed() {
+    const title = log[0]?.title ?? "";
+    if (title === "Clearance" || title === "Amount") return ask();
+    if (title === "Release" || title === "Delivery" || title === "Verifier") {
+      return deliverAndRelease();
+    }
+    if (title === "Force") return forceAllow();
+    if (title === "Swap") return swapVendor();
+    if (title === "Revoke") return revoke();
+    return checkGate();
+  }
+
+  const gateUp = gateState.startsWith("Gate is up");
+  const gateChecking = gateState.startsWith("The gate has not");
+  const gateDown = /not running|not with a health/.test(gateState);
+  const policySigner = gateUp
+    ? gateState.slice("Gate is up. Policy signer ".length).replace(/\.$/, "")
+    : "";
+  const gateSummary = gateChecking
+    ? "Checking the gate."
+    : gateUp
+      ? mandateAccount
+        ? "Gate is up. Mandate open."
+        : "Gate is up. No mandate yet."
+      : "Gate is down.";
+  const storeLabel =
+    import.meta.env.VITE_GATE_URL === "/api/gate" ? "Supabase" : "local gate";
+  const banner = bannerFrom(log);
+  const reasonCodes = banner ? reasonCodesIn(banner.detail) : [];
+  const callFailed =
+    gateDown ||
+    (log[0]
+      ? ["Clearance", "Release", "Force", "Revoke", "Mandate", "Gate", "Delivery", "Verifier", "Amount", "Corridor", "Swap"].includes(
+          log[0].title,
+        ) &&
+        /fail|not running|did not|refused|Could not|Enter a|nothing to|returned|No free/i.test(
+          log[0].detail,
+        )
+      : false);
+  const walletLabel =
+    status === "connecting"
+      ? "Waiting for MetaMask"
+      : connected
+        ? shorten(connected)
+        : "Wallet";
+
   return (
-    <div className="k-page">
-      <SiteHeader route="dashboard" />
-      <main id="content" className="k-dashboard">
-        <header className="k-dash-title">
-          <p className="k-index">Devnet · local gate</p>
-          <h1>The leash</h1>
-          <p>
-            This page drives the compliance gate. It does not submit a Solana
-            transaction. Connect a wallet when you want the mandate owner to be
-            that address. Otherwise the demo owner key is used, and it is not
-            your wallet.
-          </p>
-        </header>
-
-        <section className="k-block" aria-labelledby="wallet-title">
-          <h2 id="wallet-title">Wallet</h2>
-          <p className="k-status" role="status">
-            {status === "connected"
-              ? "Connected"
-              : status === "connecting"
-                ? "Waiting for MetaMask"
-                : "Not connected"}
-          </p>
-          {status === "connecting" ? (
-            <p role="status">
-              Click the MetaMask icon and approve the open request. Leave that
-              window open until it finishes.
-            </p>
-          ) : null}
-          {walletNote || walletErrorText(error) ? (
-            <p role="status">{walletNote || walletErrorText(error)}</p>
-          ) : null}
-          <div className="k-connectors">
-            {connectors.map((connector) => (
-              <button
-                key={connector.id}
-                type="button"
-                className="k-action k-action-ghost"
-                onClick={() => {
-                  if (connectLock.current || status === "connecting") return;
-                  connectLock.current = true;
-                  setWalletNote("");
-                  connect(connector.id)
-                    .catch((caught: unknown) => {
-                      setWalletNote(
-                        walletErrorText(caught) ||
-                          "The wallet refused the connection.",
-                      );
-                    })
-                    .finally(() => {
-                      connectLock.current = false;
-                    });
-                }}
-                disabled={status === "connecting" || connectLock.current}
-              >
-                {connector.name.toLowerCase().includes("metamask")
-                  ? "Connect MetaMask"
-                  : connector.name}
-                <Arrow />
-              </button>
-            ))}
-            {connectors.some((connector) =>
-              connector.name.toLowerCase().includes("metamask"),
-            ) ? null : (
-              <button
-                type="button"
-                className="k-action k-action-ghost"
-                onClick={() => {
-                  setWalletNote(
-                    "Looking for MetaMask. Unlock the extension, then click Connect MetaMask again.",
-                  );
-                  refreshMetaMask();
-                }}
-                disabled={status === "connecting"}
-              >
-                Connect MetaMask
-                <Arrow />
-              </button>
-            )}
-          </div>
-          <p className="k-mono">
-            {connected ?? "No wallet connected. The demo owner key is ready."}
-          </p>
+    <div className="k-page d-shell">
+      <header className="d-bar">
+        <a className="d-word" href="#/">
+          LEASH
+        </a>
+        <nav className="d-nav" aria-label="Pages">
+          <a href="#/">Landing</a>
+          <a href="#/dashboard" aria-current="page">
+            Dashboard
+          </a>
+        </nav>
+        <div className="d-status">
+          <span className="d-badge">Devnet</span>
+          <span className={gateUp ? "d-chip d-chip-up" : "d-chip"} role="status">
+            <Dot on={gateUp} />
+            {gateChecking ? "Checking" : gateUp ? "Up" : "Down"}
+          </span>
           <button
+            ref={accountButton}
             type="button"
-            className="k-action k-action-ghost"
-            onClick={() => {
-              if (status !== "connected") {
-                push(
-                  "Wallet",
-                  "No wallet is connected. Connect MetaMask, or keep the demo owner key."
-                );
-                return;
-              }
-              disconnect();
-              push("Wallet", "Disconnected. The demo owner key is the mandate owner again.");
-            }}
+            className="d-btn d-btn-secondary d-wallet"
+            aria-expanded={accountOpen}
+            aria-controls="account-panel"
+            title={connected ?? "No wallet connected. The demo owner key is ready."}
+            onClick={() => setAccountOpen((open) => !open)}
           >
-            Disconnect
-            <Arrow direction="left" />
+            {walletLabel}
           </button>
-        </section>
-
-        <AccountAccess wallet={wallet} />
-
-        <section className="k-block" aria-labelledby="gate-title">
-          <h2 id="gate-title">Gate</h2>
-          <p role="status">{gateState}</p>
-          <p className="k-mono">Agent key {agentAddress}</p>
-          <div className="k-actions">
-            <button
-              type="button"
-              className="k-action"
-              onClick={() => run(checkGate)}
-              disabled={busy}
-            >
-              Check the gate
-              <Arrow />
-            </button>
-            <button
-              type="button"
-              className="k-action"
-              onClick={() => run(() => openMandate())}
-              disabled={busy}
-            >
-              Open a mandate
-              <Arrow />
-            </button>
+        </div>
+        {accountOpen ? (
+          <div
+            ref={accountPanel}
+            id="account-panel"
+            className="d-popover"
+            role="dialog"
+            aria-label="Wallet and account"
+            tabIndex={-1}
+          >
+            <section aria-labelledby="wallet-title">
+              <p className="d-section-title" id="wallet-title">
+                Wallet
+              </p>
+              <p className="d-note">
+                This page drives the compliance gate. It does not submit a Solana
+                transaction. Connect a wallet when you want the mandate owner to be
+                that address. Otherwise the demo owner key is used, and it is not
+                your wallet.
+              </p>
+              <p className="d-status-line" role="status">
+                {status === "connected"
+                  ? "Connected"
+                  : status === "connecting"
+                    ? "Waiting for MetaMask"
+                    : "Not connected"}
+              </p>
+              {status === "connecting" ? (
+                <p role="status">
+                  Click the MetaMask icon and approve the open request. Leave that
+                  window open until it finishes.
+                </p>
+              ) : null}
+              {walletNote || walletErrorText(error) ? (
+                <p role="status">{walletNote || walletErrorText(error)}</p>
+              ) : null}
+              <div className="d-actions">
+                {connectors.map((connector) => (
+                  <button
+                    key={connector.id}
+                    type="button"
+                    className="d-btn d-btn-secondary"
+                    onClick={() => {
+                      if (connectLock.current || status === "connecting") return;
+                      connectLock.current = true;
+                      setWalletNote("");
+                      connect(connector.id)
+                        .catch((caught: unknown) => {
+                          setWalletNote(
+                            walletErrorText(caught) ||
+                              "The wallet refused the connection.",
+                          );
+                        })
+                        .finally(() => {
+                          connectLock.current = false;
+                        });
+                    }}
+                    disabled={status === "connecting" || connectLock.current}
+                  >
+                    {connector.name.toLowerCase().includes("metamask")
+                      ? "Connect MetaMask"
+                      : connector.name}
+                  </button>
+                ))}
+                {connectors.some((connector) =>
+                  connector.name.toLowerCase().includes("metamask"),
+                ) ? null : (
+                  <button
+                    type="button"
+                    className="d-btn d-btn-secondary"
+                    onClick={() => {
+                      setWalletNote(
+                        "Looking for MetaMask. Unlock the extension, then click Connect MetaMask again.",
+                      );
+                      refreshMetaMask();
+                    }}
+                    disabled={status === "connecting"}
+                  >
+                    Connect MetaMask
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="d-btn d-btn-ghost"
+                  onClick={() => {
+                    if (status !== "connected") {
+                      push(
+                        "Wallet",
+                        "No wallet is connected. Connect MetaMask, or keep the demo owner key.",
+                      );
+                      return;
+                    }
+                    disconnect();
+                    push(
+                      "Wallet",
+                      "Disconnected. The demo owner key is the mandate owner again.",
+                    );
+                  }}
+                >
+                  Disconnect
+                </button>
+              </div>
+              <p className="d-mono" title={connected ?? undefined}>
+                {connected ?? "No wallet connected. The demo owner key is ready."}
+              </p>
+            </section>
+            <AccountAccess wallet={wallet} />
           </div>
-          {mandateAccount ? (
-            <p className="k-mono">
-              Mandate {mandateId} · {mandateAccount}
+        ) : null}
+      </header>
+      <main id="content" className="d-workspace">
+        <details className="d-card d-gate">
+          <summary>
+            <span className="d-card-kicker">Gate and mandate</span>
+            <span className="d-summary">{gateSummary}</span>
+          </summary>
+          <div className="d-card-body">
+            <p role="status">{gateState}</p>
+            <p className="d-muted">
+              Devnet · {storeLabel}
             </p>
-          ) : null}
-        </section>
+            <KeyLine label="Policy signer" value={policySigner} />
+            <KeyLine label="Agent key" value={agentAddress} />
+            {mandateAccount ? (
+              <KeyLine label={`Mandate ${mandateId}`} value={mandateAccount} />
+            ) : null}
+            <div className="d-actions">
+              <button
+                type="button"
+                className="d-btn d-btn-secondary"
+                onClick={() => run(checkGate)}
+                disabled={busy}
+                aria-busy={busy}
+              >
+                {busy ? <Spinner /> : null}
+                Check the gate
+              </button>
+              <button
+                type="button"
+                className="d-btn d-btn-secondary"
+                onClick={() => run(() => openMandate())}
+                disabled={busy}
+                aria-busy={busy}
+              >
+                {busy ? <Spinner /> : null}
+                Open a mandate
+              </button>
+            </div>
+          </div>
+        </details>
 
-        <section className="k-block" aria-labelledby="proposal-title">
-          <h2 id="proposal-title">Proposal</h2>
+        <section className="d-card d-pay" aria-labelledby="payment-title">
+          <h1 id="payment-title">Payment</h1>
           <form
-            className="k-form"
+            className="d-form"
             onSubmit={(event) => {
               event.preventDefault();
               run(() => ask().then(() => undefined));
             }}
           >
-            <label>
-              Goal
-              <textarea
-                value={goal}
-                onChange={(event) => setGoal(event.target.value)}
-                rows={3}
-              />
-            </label>
-            <label>
-              Amount in test USDC
-              <input
-                inputMode="decimal"
-                value={amount}
-                onChange={(event) => setAmount(event.target.value)}
-              />
-            </label>
-            <fieldset>
+            <label htmlFor="goal">Goal</label>
+            <textarea
+              id="goal"
+              value={goal}
+              onChange={(event) => setGoal(event.target.value)}
+              rows={2}
+            />
+            <label htmlFor="amount">Amount in test USDC</label>
+            <input
+              id="amount"
+              inputMode="decimal"
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+            />
+            <fieldset className="d-vendors">
               <legend>Vendor</legend>
-              {vendors.map((item) => (
-                <label className="k-choice" key={item.address}>
-                  <input
-                    type="radio"
-                    name="vendor"
-                    value={item.name}
-                    checked={vendorName === item.name}
-                    onChange={() => setVendorName(item.name)}
-                  />
-                  <span>
-                    <strong>{item.name}</strong>
-                    <small>{item.note}</small>
-                  </span>
-                </label>
-              ))}
+              <div className="d-vendor-row" role="radiogroup" aria-label="Vendor">
+                {vendors.map((item) => (
+                  <label
+                    className={
+                      vendorName === item.name ? "d-vendor is-selected" : "d-vendor"
+                    }
+                    key={item.address}
+                  >
+                    <input
+                      type="radio"
+                      name="vendor"
+                      value={item.name}
+                      checked={vendorName === item.name}
+                      onChange={() => setVendorName(item.name)}
+                    />
+                    <span className="d-vendor-name">{item.name}</span>
+                    <span className="d-vendor-note" title={item.note}>
+                      {item.note}
+                    </span>
+                    <span className={item.blocked ? "d-tag d-tag-warn" : "d-tag"}>
+                      {item.blocked
+                        ? "On block list: expect a refusal"
+                        : "Registered payout wallet"}
+                    </span>
+                  </label>
+                ))}
+              </div>
             </fieldset>
-            <button type="submit" className="k-action" disabled={busy}>
-              Ask for a clearance
-              <Arrow />
-            </button>
+            <dl className="d-terms">
+              <div>
+                <dt>Category</dt>
+                <dd>7</dd>
+              </div>
+              <div>
+                <dt>Purpose</dt>
+                <dd>1001</dd>
+              </div>
+              <div>
+                <dt>Corridor</dt>
+                <dd>US to US</dd>
+              </div>
+              <div>
+                <dt>Invoice</dt>
+                <dd>USD, one dollar to one USDC</dd>
+              </div>
+              <div>
+                <dt>Budget</dt>
+                <dd>{BUDGET}.00</dd>
+              </div>
+              <div>
+                <dt>Per payment</dt>
+                <dd>{PER_PAYMENT}.00</dd>
+              </div>
+              <div>
+                <dt>Last payment</dt>
+                <dd>
+                  {lastPayment ? (
+                    <span className="d-inline-key">
+                      <code title={lastPayment}>{shorten(lastPayment)}</code>
+                      <CopyButton value={lastPayment} label="last payment" />
+                    </span>
+                  ) : (
+                    "none"
+                  )}
+                </dd>
+              </div>
+              {lastClearance ? (
+                <div>
+                  <dt>Clearance</dt>
+                  <dd>
+                    Signed for {baseToUsdc(usdcToBase(Number(amount) || 0))} USDC
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
+            <div className="d-actions">
+              <button
+                type="submit"
+                className="d-btn d-btn-primary"
+                disabled={busy}
+                aria-busy={busy}
+              >
+                {busy ? <Spinner /> : null}
+                Ask for a clearance
+              </button>
+              <button
+                type="button"
+                className="d-btn d-btn-secondary"
+                onClick={() => run(deliverAndRelease)}
+                disabled={busy || !lastClearance}
+                aria-busy={busy}
+                aria-describedby={lastClearance ? undefined : "release-hint"}
+              >
+                {busy ? <Spinner /> : null}
+                Deliver and release
+              </button>
+            </div>
+            {lastClearance ? null : (
+              <p id="release-hint" className="d-hint">
+                Deliver and release stays off until a clearance has been issued.
+              </p>
+            )}
           </form>
-          <p className="k-terms">
-            {`Payment terms. Category 7. Purpose 1001. Corridor US to US. Invoice currency USD at one dollar to one USDC. Budget ${BUDGET}.00. Per payment ${PER_PAYMENT}.00. Last payment ${lastPayment || "none"}.`}
-            {lastClearance
-              ? ` Clearance signed for ${baseToUsdc(usdcToBase(Number(amount) || 0))} USDC.`
-              : ""}
-          </p>
-          <div className="k-actions">
-            <button
-              type="button"
-              className="k-action k-action-ghost"
-              onClick={() => run(deliverAndRelease)}
-              disabled={busy}
-            >
-              Deliver and release
-              <Arrow />
-            </button>
-          </div>
         </section>
 
-        <section className="k-block" aria-labelledby="attack-title">
-          <h2 id="attack-title">Three refusals</h2>
-          <div className="k-attack">
-            <div>
-              <span>01</span>
+        <section className="d-card d-break" aria-labelledby="attack-title">
+          <h2 id="attack-title">Try to break it</h2>
+          <div className="d-attacks">
+            <article>
               <h3>Swap the vendor</h3>
               <p>Take a real clearance and change only the vendor bytes.</p>
               <button
                 type="button"
-                className="k-action k-action-ghost"
+                className="d-btn d-btn-secondary"
                 onClick={() => run(swapVendor)}
                 disabled={busy}
+                aria-busy={busy}
               >
+                {busy ? <Spinner /> : null}
                 Run the swap
-                <Arrow />
               </button>
-            </div>
-            <div>
-              <span>02</span>
+            </article>
+            <article>
               <h3>Disable the corridor</h3>
-              <p>
-                The honest gate refuses. A forced allow can still be signed.
-              </p>
-              <button
-                type="button"
-                className="k-action k-action-ghost"
-                onClick={() => run(disableCorridor)}
-                disabled={busy}
-              >
-                Close the corridor
-                <Arrow />
-              </button>
-              <button
-                type="button"
-                className="k-action k-action-ghost"
-                onClick={() => run(forceAllow)}
-                disabled={busy}
-              >
-                Force an allow
-                <Arrow />
-              </button>
-            </div>
-            <div>
-              <span>03</span>
+              <p>The honest gate refuses. A forced allow can still be signed.</p>
+              <div className="d-actions">
+                <button
+                  type="button"
+                  className="d-btn d-btn-secondary"
+                  onClick={() => run(disableCorridor)}
+                  disabled={busy}
+                  aria-busy={busy}
+                >
+                  {busy ? <Spinner /> : <WarnIcon />}
+                  Close the corridor
+                </button>
+                <button
+                  type="button"
+                  className="d-btn d-btn-secondary"
+                  onClick={() => run(forceAllow)}
+                  disabled={busy}
+                  aria-busy={busy}
+                >
+                  {busy ? <Spinner /> : <WarnIcon />}
+                  Force an allow
+                </button>
+              </div>
+            </article>
+            <article>
               <h3>Revoke the mandate</h3>
               <p>The next funding fails. Open a new mandate to continue.</p>
-              <button
-                type="button"
-                className="k-action k-action-ghost"
-                onClick={() => run(revoke)}
-                disabled={busy}
-              >
-                Revoke
-                <Arrow />
-              </button>
-              <button
-                type="button"
-                className="k-action k-action-ghost"
-                onClick={() =>
-                  run(() => openMandate(session.current.mandateId + 1))
-                }
-                disabled={busy}
-              >
-                Open the next mandate
-                <Arrow />
-              </button>
-            </div>
+              <div className="d-actions">
+                <button
+                  type="button"
+                  className="d-btn d-btn-secondary"
+                  onClick={() => run(revoke)}
+                  disabled={busy}
+                  aria-busy={busy}
+                >
+                  {busy ? <Spinner /> : <WarnIcon />}
+                  Revoke
+                </button>
+                <button
+                  type="button"
+                  className="d-btn d-btn-secondary"
+                  onClick={() => run(() => openMandate(session.current.mandateId + 1))}
+                  disabled={busy}
+                  aria-busy={busy}
+                >
+                  {busy ? <Spinner /> : null}
+                  Open the next mandate
+                </button>
+              </div>
+            </article>
           </div>
         </section>
 
-        <section className="k-block" aria-labelledby="log-title">
-          <h2 id="log-title">Evidence on this page</h2>
-          <div className="k-log" aria-live="polite">
-            {log.length === 0 ? <p>No decision yet.</p> : null}
-            {log.map((line, index) => (
-              <article key={`${line.title}-${index}`}>
-                <h3>{line.title}</h3>
-                <p>{line.detail}</p>
-              </article>
-            ))}
-          </div>
-        </section>
+        <aside className="d-card d-evidence" aria-labelledby="log-title">
+          <h2 id="log-title">Evidence</h2>
+          {busy ? (
+            <div className="d-skeleton" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+          ) : null}
+          {gateDown ? (
+            <div className="d-error" role="alert">
+              <p>{readable(gateState)}</p>
+              <button
+                type="button"
+                className="d-btn d-btn-secondary"
+                onClick={() => run(checkGate)}
+                disabled={busy}
+              >
+                Retry
+              </button>
+            </div>
+          ) : null}
+          {log.length === 0 && !busy ? (
+            <p className="d-empty">
+              Ask for a clearance to see every check, the signed decision and the
+              transaction here.
+            </p>
+          ) : null}
+          {banner ? (
+            <p className={`d-banner d-banner-${banner.tone}`} aria-live="polite">
+              <Mark kind={banner.tone === "cleared" ? "pass" : banner.tone === "review" ? "flag" : "fail"} />
+              <span>{banner.title}</span>
+            </p>
+          ) : null}
+          {reasonCodes.length > 0 ? (
+            <ul className="d-chips" aria-label="Reason codes">
+              {reasonCodes.map((code) => (
+                <li key={code}>{code}</li>
+              ))}
+            </ul>
+          ) : null}
+          {log.length > 0 ? (
+            <ol className="d-timeline">
+              {groupLog(log).map((line, index) => {
+                const kind = markFor(line);
+                return (
+                  <li key={`${line.title}-${line.detail}`}>
+                    <Mark kind={kind} />
+                    <div>
+                      <h3>
+                        {line.title}
+                        {line.count > 1 ? <span className="d-count"> × {line.count}</span> : null}
+                      </h3>
+                      <p>{line.detail}</p>
+                      {index === 0 && callFailed && !gateDown ? (
+                        <button
+                          type="button"
+                          className="d-btn d-btn-secondary"
+                          onClick={() => run(retryFailed)}
+                          disabled={busy}
+                        >
+                          Retry
+                        </button>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          ) : null}
+          {lastClearance || lastPayment ? (
+            <dl className="d-terms d-clearance">
+              {banner ? (
+                <div>
+                  <dt>Decision</dt>
+                  <dd>{banner.title}</dd>
+                </div>
+              ) : null}
+              {lastClearance ? (
+                <div>
+                  <dt>Signer</dt>
+                  <dd>
+                    <span className="d-inline-key">
+                      <code title={lastClearance.signer}>{shorten(lastClearance.signer)}</code>
+                      <CopyButton value={lastClearance.signer} label="policy signer on the clearance" />
+                    </span>
+                  </dd>
+                </div>
+              ) : null}
+              {lastClearance ? (
+                <div>
+                  <dt>Signature</dt>
+                  <dd>
+                    <span className="d-inline-key">
+                      <code title={lastClearance.signature}>{shorten(lastClearance.signature)}</code>
+                      <CopyButton value={lastClearance.signature} label="clearance signature" />
+                    </span>
+                  </dd>
+                </div>
+              ) : null}
+              {lastPayment ? (
+                <div>
+                  <dt>Payment</dt>
+                  <dd>
+                    <span className="d-inline-key">
+                      <code title={lastPayment}>{shorten(lastPayment)}</code>
+                      <CopyButton value={lastPayment} label="payment id" />
+                    </span>
+                  </dd>
+                </div>
+              ) : null}
+              {funded ? (
+                <div>
+                  <dt>Amount</dt>
+                  <dd>{baseToUsdc(funded.amount)} USDC</dd>
+                </div>
+              ) : null}
+            </dl>
+          ) : null}
+          <p className="d-footnote">
+            Leash is not a regulated compliance provider and makes no compliance
+            claims. This page records the gate decision. It does not submit a
+            Solana transaction.
+          </p>
+        </aside>
+
       </main>
     </div>
+  );
+}
+
+function skippedLabel(skipped: number[]) {
+  if (skipped.length === 0) return "";
+  if (skipped.length === 1) return `Mandate ${skipped[0]} was already stored.`;
+  const contiguous = skipped.every((id, index) => index === 0 || id === skipped[index - 1] + 1);
+  const list = contiguous
+    ? `${skipped[0]}–${skipped[skipped.length - 1]}`
+    : skipped.join(", ");
+  return `Mandates ${list} were already stored.`;
+}
+
+function groupLog(lines: LogLine[]) {
+  const grouped: Array<LogLine & { count: number }> = [];
+  for (const line of lines) {
+    const existing = grouped.find(
+      (item) => item.title === line.title && item.detail === line.detail,
+    );
+    if (existing) existing.count += 1;
+    else grouped.push({ ...line, count: 1 });
+  }
+  return grouped;
+}
+
+function shorten(value: string) {
+  const trimmed = value.trim();
+  if (trimmed.length <= 12) return trimmed;
+  return `${trimmed.slice(0, 4)}…${trimmed.slice(-5)}`;
+}
+
+function readable(detail: string) {
+  const first = detail.split("\n")[0] ?? detail;
+  return first.replace(/\s+at\s+\S.*/, "").slice(0, 280);
+}
+
+function reasonCodesIn(detail: string) {
+  return Array.from(new Set(detail.match(/\b[A-Z][A-Z0-9_]{2,}\b/g) ?? []));
+}
+
+function bannerFrom(lines: LogLine[]) {
+  const decision = lines.find((line) =>
+    /Allow|Deny|refused|Revoked|Swapped|Forced/i.test(line.title),
+  );
+  if (!decision) {
+    const review = lines.find((line) => /review/i.test(`${line.title} ${line.detail}`));
+    return review
+      ? { tone: "review" as const, title: "Needs review", detail: review.detail }
+      : null;
+  }
+  const blob = `${decision.title} ${decision.detail}`;
+  if (/Swapped|Deny|refused|Revoked/i.test(decision.title) || /does not verify/i.test(blob)) {
+    return { tone: "refused" as const, title: "Refused", detail: decision.detail };
+  }
+  if (/Allow/i.test(decision.title)) {
+    return { tone: "cleared" as const, title: "Cleared", detail: decision.detail };
+  }
+  return { tone: "review" as const, title: "Needs review", detail: decision.detail };
+}
+
+function markFor(line: LogLine): "pass" | "flag" | "fail" | "info" {
+  const blob = `${line.title} ${line.detail}`;
+  if (/Adapt|REVIEW|flag/i.test(blob)) return "flag";
+  if (/Deny|refused|fail|does not verify|not running|Could not|nothing to/i.test(blob)) {
+    return "fail";
+  }
+  if (/Allow|verifies|open|signed/i.test(blob)) return "pass";
+  return "info";
+}
+
+function CopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="d-btn d-btn-ghost d-copy"
+      aria-label={copied ? `${label} copied` : `Copy ${label}`}
+      title={value}
+      onClick={() => {
+        navigator.clipboard
+          .writeText(value)
+          .then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+          })
+          .catch(() => {
+            setCopied(false);
+          });
+      }}
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+function KeyLine({ label, value }: { label: string; value: string }) {
+  if (!value) return null;
+  return (
+    <p className="d-keyline">
+      <span>{label}</span>
+      <code title={value}>{shorten(value)}</code>
+      <CopyButton value={value} label={label} />
+    </p>
+  );
+}
+
+function Spinner() {
+  return (
+    <svg className="d-spin" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="2" opacity="0.35" />
+      <path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function WarnIcon() {
+  return (
+    <svg className="d-warn" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M8 1.5 14.5 13.5h-13L8 1.5z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+      />
+      <path d="M8 6v3.2" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="8" cy="11.2" r="0.7" fill="currentColor" />
+    </svg>
+  );
+}
+
+function Dot({ on }: { on: boolean }) {
+  return <span className={on ? "d-dot d-dot-on" : "d-dot"} aria-hidden="true" />;
+}
+
+function Mark({ kind }: { kind: "pass" | "flag" | "fail" | "info" }) {
+  const label = kind === "pass" ? "Pass" : kind === "flag" ? "Flag" : kind === "fail" ? "Fail" : "Note";
+  return (
+    <span className={`d-mark d-mark-${kind}`}>
+      {kind === "pass" ? "✓" : kind === "fail" ? "!" : kind === "flag" ? "•" : "–"}
+      <span className="d-mark-label">{label}</span>
+    </span>
   );
 }
 
@@ -887,4 +1326,8 @@ function reasonsOf(result: GateResult): string[] {
 
 function errorText(result: GateResult): string {
   return reasonsOf(result).join(", ") || `The gate returned ${result.status}.`;
+}
+
+function failed(result: GateResult): boolean {
+  return result.status >= 400 && errorText(result) !== "BAD_STATE";
 }
