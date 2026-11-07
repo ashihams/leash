@@ -212,12 +212,15 @@ export function Landing() {
           </div>
           <div>
             <span>Screening</span>
-            <span>A local vendor block list</span>
+            <span>OFAC SDN list</span>
           </div>
           <p>
-            Leash is not a compliance, KYC, AML, sanctions, or Travel Rule
-            product. A compromised policy signer can still approve a payment
-            that satisfies the on-chain checks.
+            Leash is not a regulated compliance provider and makes no compliance
+            claims. No match on the OFAC SDN list (US Treasury) means only that
+            the address was absent from the retrieved file. OFAC states its
+            digital currency address listings are not exhaustive. EU, UN and
+            other lists are not covered. A compromised policy signer can still
+            approve a payment that satisfies the on-chain checks.
           </p>
         </footer>
       </main>

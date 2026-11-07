@@ -72,6 +72,8 @@ export type CheckRow = {
   status: "pass" | "flag" | "fail";
   reasonCode: string;
   evidenceHash: string;
+  provider?: string;
+  environment?: string;
   createdAt: string;
 };
 
@@ -303,10 +305,13 @@ type TableName =
   | "audit_log";
 
 export class RlsClient {
-  constructor(
-    private readonly db: MemoryDb,
-    private readonly actor: Actor,
-  ) {}
+  private readonly db: MemoryDb;
+  private readonly actor: Actor;
+
+  constructor(db: MemoryDb, actor: Actor) {
+    this.db = db;
+    this.actor = actor;
+  }
 
   from(table: TableName): RlsQuery {
     return new RlsQuery(this.db, this.actor, table);
@@ -318,11 +323,15 @@ class RlsQuery {
   private values: Record<string, unknown> | null = null;
   private filters: Array<[string, unknown]> = [];
 
-  constructor(
-    private readonly db: MemoryDb,
-    private readonly actor: Actor,
-    private readonly table: TableName,
-  ) {}
+  private readonly db: MemoryDb;
+  private readonly actor: Actor;
+  private readonly table: TableName;
+
+  constructor(db: MemoryDb, actor: Actor, table: TableName) {
+    this.db = db;
+    this.actor = actor;
+    this.table = table;
+  }
 
   select(): this {
     this.operation = "select";

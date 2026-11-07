@@ -9,6 +9,7 @@ import {
 } from "./bytes.ts";
 import { evaluateFund, evaluateRelease, type Evaluation } from "./checks.ts";
 import {
+  CHECK_SCREENING,
   CLEARANCE_LEN,
   DECISION_ALLOW,
   DECISION_DENY,
@@ -34,12 +35,18 @@ import {
   insertPayment,
   insertVendor,
   listEvidence,
+  listProviderChecks,
   revokeMandate,
   transaction,
   updatePayment,
   upsertCorridor,
 } from "./db.ts";
 import type { DatabaseSync } from "node:sqlite";
+import { runProviderGate, type ProviderGateResult } from "./providers/gate.ts";
+import {
+  registerProviderRoutes,
+  type ProviderRouteDeps,
+} from "./providers/routes.ts";
 
 const DAY_SECONDS = 86_400;
 const MIN_WINDOW_SECONDS = 60;
@@ -57,6 +64,7 @@ export type GateOptions = {
   policyVersion: number;
   now?: () => number;
   clearanceTtlSeconds?: number;
+  providerRoutes?: ProviderRouteDeps;
   persistHistory?: (record: {
     paymentId: string;
     buyer: string;
@@ -86,6 +94,10 @@ export function buildApp(options: GateOptions): FastifyInstance {
     }
     throw error;
   });
+
+  if (options.providerRoutes) {
+    registerProviderRoutes(app, options.providerRoutes);
+  }
 
   app.get("/health", async () => ({
     ok: true,
@@ -167,6 +179,21 @@ export function buildApp(options: GateOptions): FastifyInstance {
     const intentOk = mandate
       ? verifyIntent(KIND_FUND, fields, mandate.agent, body.intentSignature)
       : false;
+    const providerResult = options.providerRoutes
+      ? await runProviderGate({
+          db: options.db,
+          sanctions: options.providerRoutes.sanctions,
+          vendor: fields.vendor.text,
+          paymentId: fields.paymentId.text,
+          environment: options.providerRoutes.environment,
+          nowMs: now() * 1000,
+        })
+      : ({ ok: true } satisfies ProviderGateResult);
+    if (!providerResult.ok && providerResult.unavailable) {
+      throw new HttpError(503, "CHECK_UNAVAILABLE", {
+        reason: providerResult.reason,
+      });
+    }
     const evaluation = evaluateFund({
       now: now(),
       configuredMint,
@@ -188,6 +215,24 @@ export function buildApp(options: GateOptions): FastifyInstance {
       vendorRow: getVendor(options.db, fields.vendor.text),
       corridor: getCorridor(options.db, fields.fromCountry, fields.toCountry),
     });
+    if (!providerResult.ok) {
+      evaluation.ok = false;
+      evaluation.checksFailed |= CHECK_SCREENING;
+      for (const reason of providerResult.reasons) {
+        if (!evaluation.reasons.includes(reason)) evaluation.reasons.push(reason);
+      }
+      if (providerResult.reasons.includes("REVIEW_STARTED")) {
+        try {
+          await options.providerRoutes?.enqueueReview?.({
+            paymentId: fields.paymentId.text,
+            wallet: fields.vendor.text,
+            reasonCode: "REVIEW_STARTED",
+          });
+        } catch {
+          throw new HttpError(503, "CHECK_UNAVAILABLE");
+        }
+      }
+    }
     const decision = evaluation.ok ? DECISION_ALLOW : DECISION_DENY;
     if (evaluation.ok && mandate) {
       transaction(options.db, () => {
@@ -402,7 +447,15 @@ export function buildApp(options: GateOptions): FastifyInstance {
   app.get("/evidence/:paymentId", async (request) => {
     const params = request.params as { paymentId: string };
     const paymentId = hash(params.paymentId, "PAYMENT_ID").text;
-    return { evidence: listEvidence(options.db, paymentId) };
+    const providerChecks = listProviderChecks(options.db, paymentId);
+    const notes = providerChecks
+      .map((check) => check.publicNote)
+      .filter((note) => note.length > 0);
+    return {
+      evidence: listEvidence(options.db, paymentId),
+      providerChecks,
+      notes,
+    };
   });
 
   return app;

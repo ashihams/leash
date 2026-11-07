@@ -136,6 +136,43 @@ export function openDatabase(path: string): DatabaseSync {
       delivery_deadline INTEGER NOT NULL,
       acceptance_deadline INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS identity_verifications (
+      vendor_wallet TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      session_id TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL,
+      expires_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS webhook_events (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      received_at TEXT NOT NULL,
+      verified INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id TEXT PRIMARY KEY,
+      actor_type TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      payment_id TEXT,
+      details TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS provider_checks (
+      id TEXT PRIMARY KEY,
+      payment_id TEXT,
+      wallet TEXT NOT NULL,
+      check_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      evidence_hash TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      environment TEXT NOT NULL,
+      public_note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS evidence (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       created_at INTEGER NOT NULL,
@@ -153,6 +190,13 @@ export function openDatabase(path: string): DatabaseSync {
       forced INTEGER NOT NULL
     );
   `);
+  try {
+    db.exec(
+      "ALTER TABLE provider_checks ADD COLUMN public_note TEXT NOT NULL DEFAULT ''",
+    );
+  } catch {
+    // The column is already present on databases created with this schema.
+  }
   return db;
 }
 
@@ -166,6 +210,183 @@ export function transaction<T>(db: DatabaseSync, fn: () => T): T {
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+export type IdentityRow = {
+  vendorWallet: string;
+  provider: string;
+  sessionId: string;
+  status: string;
+  expiresAt: string | null;
+  updatedAt: string;
+};
+
+export function getIdentity(
+  db: DatabaseSync,
+  vendorWallet: string,
+): IdentityRow | undefined {
+  const row = db
+    .prepare(
+      `SELECT vendor_wallet, provider, session_id, status, expires_at, updated_at
+       FROM identity_verifications WHERE vendor_wallet = ?`,
+    )
+    .get(vendorWallet) as
+    | {
+        vendor_wallet: string;
+        provider: string;
+        session_id: string;
+        status: string;
+        expires_at: string | null;
+        updated_at: string;
+      }
+    | undefined;
+  if (!row) return undefined;
+  return {
+    vendorWallet: row.vendor_wallet,
+    provider: row.provider,
+    sessionId: row.session_id,
+    status: row.status,
+    expiresAt: row.expires_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function upsertIdentity(
+  db: DatabaseSync,
+  row: IdentityRow,
+): void {
+  db.prepare(
+    `INSERT INTO identity_verifications
+      (vendor_wallet, provider, session_id, status, expires_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(vendor_wallet) DO UPDATE SET
+      provider = excluded.provider,
+      session_id = excluded.session_id,
+      status = excluded.status,
+      expires_at = excluded.expires_at,
+      updated_at = excluded.updated_at`,
+  ).run(
+    row.vendorWallet,
+    row.provider,
+    row.sessionId,
+    row.status,
+    row.expiresAt,
+    row.updatedAt,
+  );
+}
+
+export function insertWebhookEvent(
+  db: DatabaseSync,
+  row: { id: string; provider: string; sessionId: string; receivedAt: string },
+): boolean {
+  const existing = db
+    .prepare("SELECT id FROM webhook_events WHERE id = ?")
+    .get(row.id);
+  if (existing) return false;
+  db.prepare(
+    `INSERT INTO webhook_events (id, provider, session_id, received_at, verified)
+     VALUES (?, ?, ?, ?, 1)`,
+  ).run(row.id, row.provider, row.sessionId, row.receivedAt);
+  return true;
+}
+
+export function insertLocalAudit(
+  db: DatabaseSync,
+  row: {
+    id: string;
+    actorType: string;
+    actorId: string;
+    action: string;
+    paymentId: string | null;
+    details: Record<string, unknown>;
+    createdAt: string;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO audit_log
+      (id, actor_type, actor_id, action, payment_id, details, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.id,
+    row.actorType,
+    row.actorId,
+    row.action,
+    row.paymentId,
+    JSON.stringify(row.details),
+    row.createdAt,
+  );
+}
+
+export function listProviderChecks(
+  db: DatabaseSync,
+  paymentId: string,
+): Array<{
+  checkId: string;
+  status: string;
+  reasonCode: string;
+  evidenceHash: string;
+  provider: string;
+  environment: string;
+  publicNote: string;
+}> {
+  const rows = db
+    .prepare(
+      `SELECT check_id, status, reason_code, evidence_hash, provider, environment, public_note
+       FROM provider_checks WHERE payment_id = ? ORDER BY created_at`,
+    )
+    .all(paymentId) as Array<{
+    check_id: string;
+    status: string;
+    reason_code: string;
+    evidence_hash: string;
+    provider: string;
+    environment: string;
+    public_note: string;
+  }>;
+  return rows.map((row) => ({
+    checkId: row.check_id,
+    status: row.status,
+    reasonCode: row.reason_code,
+    evidenceHash: row.evidence_hash,
+    provider: row.provider,
+    environment: row.environment,
+    publicNote: row.public_note,
+  }));
+}
+
+export function insertProviderCheck(
+  db: DatabaseSync,
+  row: {
+    id: string;
+    paymentId: string | null;
+    wallet: string;
+    checkId: string;
+    status: string;
+    reasonCode: string;
+    evidenceHash: string;
+    provider: string;
+    environment: string;
+    publicNote?: string;
+    createdAt: string;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO provider_checks
+      (id, payment_id, wallet, check_id, status, reason_code, evidence_hash, provider, environment, public_note, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.id,
+    row.paymentId,
+    row.wallet,
+    row.checkId,
+    row.status,
+    row.reasonCode,
+    row.evidenceHash,
+    row.provider,
+    row.environment,
+    row.publicNote ?? "",
+    row.createdAt,
+  );
 }
 
 export function insertVendor(

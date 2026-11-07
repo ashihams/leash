@@ -55,7 +55,7 @@ export type ReleaseFacts = {
   corridor?: CorridorRow;
 };
 
-// The screening bit is a local vendor block list. It is not sanctions, KYC, or AML.
+// The screening bit is a local vendor block list. Live list checks are applied by the provider gate.
 export function evaluateFund(facts: FundFacts): Evaluation {
   return evaluate((fail) => {
     const mandate = facts.mandate;
