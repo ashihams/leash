@@ -57,6 +57,19 @@ export type GateOptions = {
   policyVersion: number;
   now?: () => number;
   clearanceTtlSeconds?: number;
+  persistHistory?: (record: {
+    paymentId: string;
+    buyer: string;
+    vendor: string;
+    amount: number;
+    decision: "allow" | "deny";
+    kind: "fund" | "release";
+    checksRun: number;
+    checksFailed: number;
+    signature: string;
+    expiresAt: number;
+    reasons: string[];
+  }) => Promise<void>;
 };
 
 export function buildApp(options: GateOptions): FastifyInstance {
@@ -430,6 +443,22 @@ function sign(
     packetHash: input.fields.packetHash.bytes,
   });
   const signature = signClearance(message, options.policy.secretKey);
+  const result = {
+    decision: input.decision === DECISION_ALLOW ? "allow" : "deny",
+    signed: true,
+    reasons: input.evaluation.reasons,
+    checksRun: input.evaluation.checksRun,
+    checksFailed: input.evaluation.checksFailed,
+    message: Buffer.from(message).toString("base64"),
+    signature: Buffer.from(signature).toString("base64"),
+    signer: encodeBase58(options.policy.publicKey),
+    ed25519Program: ED25519_PROGRAM,
+    instructionData: Buffer.from(
+      ed25519InstructionData(signature, options.policy.publicKey, message)
+    ).toString("base64"),
+    evidenceId: 0,
+    clearanceHash: encodeHex(sha256(message)),
+  };
   const evidenceId = insertEvidence(options.db, {
     createdAt: input.now,
     kind: input.kind === KIND_FUND ? "fund" : "release",
@@ -445,22 +474,28 @@ function sign(
     clearanceHash: encodeHex(sha256(message)),
     forced: input.forced,
   });
-  return {
-    decision: input.decision === DECISION_ALLOW ? "allow" : "deny",
-    signed: true,
-    reasons: input.evaluation.reasons,
-    checksRun: input.evaluation.checksRun,
-    checksFailed: input.evaluation.checksFailed,
-    message: Buffer.from(message).toString("base64"),
-    signature: Buffer.from(signature).toString("base64"),
-    signer: encodeBase58(options.policy.publicKey),
-    ed25519Program: ED25519_PROGRAM,
-    instructionData: Buffer.from(
-      ed25519InstructionData(signature, options.policy.publicKey, message)
-    ).toString("base64"),
-    evidenceId,
-    clearanceHash: encodeHex(sha256(message)),
-  };
+  result.evidenceId = evidenceId;
+  if (!options.persistHistory) return result;
+  return options
+    .persistHistory({
+      paymentId: input.fields.paymentId.text,
+      buyer: input.fields.buyer.text,
+      vendor: input.fields.vendor.text,
+      amount: input.fields.amount,
+      decision: result.decision,
+      kind: input.kind === KIND_FUND ? "fund" : "release",
+      checksRun: input.evaluation.checksRun,
+      checksFailed: input.evaluation.checksFailed,
+      signature: result.signature,
+      expiresAt: input.now + input.ttl,
+      reasons: input.evaluation.reasons,
+    })
+    .then(
+      () => result,
+      () => {
+        throw new HttpError(503, "CHECK_UNAVAILABLE");
+      }
+    );
 }
 
 type Pub = { text: string; bytes: Uint8Array };

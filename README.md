@@ -111,6 +111,39 @@ npm run setup   # Or: npm run anchor-build && npm run codama:js
 
 This uses [Codama](https://github.com/codama-idl/codama) to generate a type-safe client from the Anchor IDL.
 
+## Supabase history backend
+
+Solana stays the source of truth for money, mandates, and escrow. Supabase stores dashboard login, linked wallets, payment history, clearances, check results, the review queue, and the audit log. A row in Supabase does not authorize a payment.
+
+### Setup
+
+1. Create a Supabase project and apply `supabase/migrations/20261107143000_leash_history.sql` in the SQL editor.
+2. For Solana dashboard sign-in, enable Authentication, Providers, Web3. Email magic link and email plus password work without that provider.
+3. Copy `.env.example` to `.env`. Fill in `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_KEY`. Add `INTERNAL_API_SECRET` and a 32-byte base64 `WALLET_AUTH_SECRET`.
+4. Copy the same URL and anon key to `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Do not create a `VITE_` variable for the service key.
+5. Start the gate with `npm run server` and the dashboard with `npm run dev`.
+6. Seed demo vendors and one user per role with `npm run seed`. The script writes stable public keys under `keys/`, which is gitignored.
+
+`npm run history:test` runs the auth, review, and row-security tests.
+
+### Assumptions
+
+- The existing Fastify gate on port 8787 still decides clearances. When the Supabase variables above are all set, a signed clearance is stored in Supabase before it is returned. If that write fails, the gate returns `CHECK_UNAVAILABLE` and does not hand the signature to the caller. With Supabase unset, the gate keeps using SQLite only.
+- Wallet challenge messages are the UTF-8 lines from `server/src/lib/messages.ts`. A nonce lasts 60 seconds. The wallet token lasts 15 minutes. A review with no decision for 15 minutes becomes `timed_out`, which the gate should treat as deny.
+- Vendor history outcomes use these demo thresholds: 5 or more payments in 15 minutes denies for velocity; a refund or dispute ratio above 0.2 denies once there are at least 5 payments; a wallet on `screening_list` denies. The label on that list is mock data.
+- A new Supabase user is an auditor. Changing `profiles.role` is a service-role or database-owner action. Sign in with Solana creates a dashboard session through Supabase Web3. It does not create the payment-party wallet token. Linking a wallet still requires dashboard login plus `POST /auth/link-wallet`.
+- The policy engine calls `POST /internal/check-results`, `POST /internal/clearances`, and `POST /internal/reviews` with the `X-Internal-Secret` header. Reviewers decide with a signature over the payment id, decision, and a `review` nonce.
+- Demo credentials and the screening list are mock. They are not KYC, AML, sanctions, or Travel Rule checks.
+
+### Security notes
+
+- The service key is server-only. It is read from `SUPABASE_SERVICE_KEY` and is never passed to `createClient` in frontend code.
+- Roles live in the `profiles` table. The server loads the role after `supabase.auth.getUser(token)`. A role sent by the browser is ignored. The new-user trigger always inserts `auditor` and does not copy a role out of user metadata.
+- Wallet auth is separate from dashboard login. A Solana signature proves control of a wallet for one purpose. It does not make that wallet the owner of the treasury.
+- Solana remains the source of truth. Supabase history cannot move USDC, change a mandate, or override an on-chain refusal.
+- `audit_log` has no update or delete policy. A trigger rejects those writes for every role except the database owner. Client insert and update on `payment_history`, `clearances`, and `audit_log` are not granted.
+- Database and signature failures return an error code. Callers, including the policy engine, treat that as deny. They do not turn an error into a pass.
+
 ## Learn More
 
 - [Solana Docs](https://solana.com/docs) - core concepts and guides
