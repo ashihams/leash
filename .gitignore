@@ -29,3 +29,6 @@ lerna-debug.log*
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+# Compliance server keys and local evidence
+server/data
