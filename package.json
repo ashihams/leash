@@ -38,6 +38,10 @@
     "server:test": "node --test server/test/gate.test.ts",
     "history:test": "vitest run",
     "seed": "node --experimental-strip-types scripts/seed.ts",
+    "ofac:refresh": "node --experimental-strip-types scripts/ofac-refresh.ts",
+    "ofac:coverage": "node --experimental-strip-types scripts/check-ofac-coverage.ts",
+    "providers:verify": "node --experimental-strip-types scripts/pre-verify.ts",
+    "providers:warm": "node --experimental-strip-types scripts/warm-cache.ts",
     "setup": "npm run anchor-build && npm run codama:js"
   },
   "dependencies": {
@@ -52,6 +56,7 @@
     "fastify": "^5.12.8",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "sax": "^1.6.1",
     "tailwindcss": "^4",
     "tweetnacl": "^1.0.3",
     "zod": "^4.6.7"

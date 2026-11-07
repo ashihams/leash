@@ -19,7 +19,11 @@ export function createServiceClient(url: string, serviceKey: string) {
 }
 
 export class SupabaseRepository implements HistoryRepository {
-  constructor(private readonly supabase: SupabaseClient) {}
+  private readonly supabase: SupabaseClient;
+
+  constructor(supabase: SupabaseClient) {
+    this.supabase = supabase;
+  }
 
   async insertNonce(row: NonceRow): Promise<void> {
     const { error } = await this.supabase.from("auth_nonces").insert({
@@ -204,6 +208,8 @@ export class SupabaseRepository implements HistoryRepository {
       status: row.status,
       reason_code: row.reasonCode,
       evidence_hash: row.evidenceHash,
+      provider: row.provider ?? "",
+      environment: row.environment ?? "",
     });
     fail(error);
   }

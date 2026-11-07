@@ -12,6 +12,9 @@ import {
 } from "./lib/supabase-repository.ts";
 import { walletKeyPair } from "./lib/wallet-token.ts";
 import { registerHistoryRoutes } from "./routes/history.ts";
+import { assertProviderConfig } from "./providers/config.ts";
+import { createSupabaseOfacStore, OfacSdnProvider } from "./providers/ofac.ts";
+import { DiditIdentity } from "./providers/identity.ts";
 
 const dataDir = fileURLToPath(new URL("../data/", import.meta.url));
 mkdirSync(dataDir, { recursive: true });
@@ -27,6 +30,24 @@ if (!Number.isSafeInteger(policyVersion) || policyVersion <= 0) {
   process.exit(1);
 }
 
+let providerConfig;
+try {
+  providerConfig = assertProviderConfig(process.env);
+} catch {
+  console.error(
+    "Refusing to start. Set DIDIT_API_KEY, DIDIT_WORKFLOW_ID, and DIDIT_WEBHOOK_SECRET."
+  );
+  process.exit(1);
+}
+const sanctions = new OfacSdnProvider();
+if (providerConfig.rangeApiKey) {
+  console.log("RANGE_API_KEY is set. Range is not called during clearance.");
+}
+const identity = new DiditIdentity(
+  providerConfig.diditKey,
+  providerConfig.diditWorkflowId,
+  providerConfig.diditWebhookSecret
+);
 const policy = loadKey("policy");
 const verifier = loadKey("verifier");
 const db = openDatabase(
@@ -39,6 +60,45 @@ const app = buildApp({
   verifier: verifier.publicKey,
   mint,
   policyVersion,
+  providerRoutes: {
+    db,
+    sanctions,
+    identity,
+    environment: process.env.DIDIT_ENVIRONMENT === "sandbox" ? "sandbox" : "live",
+    getDashboardUser: history?.deps.getDashboardUser,
+    getProfile: history ? (userId) => history.db.getProfile(userId) : undefined,
+    enqueueReview: history
+      ? async (entry) => {
+          await history.db.insertReview({
+            paymentId: entry.paymentId,
+            flagged: { wallet: entry.wallet, reasonCode: entry.reasonCode },
+            status: "pending",
+            reviewerUserId: null,
+            reviewerWallet: null,
+            reviewerSignature: null,
+            createdAt: new Date().toISOString(),
+            decidedAt: null,
+          });
+        }
+      : undefined,
+    audit: history
+      ? async (entry) => {
+          await history.db.insertAudit({
+            actorType: "system",
+            actorId: "didit",
+            action: "identity.webhook",
+            paymentId: null,
+            details: {
+              provider: "didit",
+              sessionId: entry.sessionId,
+              status: entry.status,
+              wallet: entry.wallet,
+            },
+            createdAt: new Date().toISOString(),
+          });
+        }
+      : undefined,
+  },
   persistHistory: history
     ? persistClearance(history.db, policyVersion)
     : undefined,
@@ -48,6 +108,15 @@ if (history) {
   console.log("History backend is on. Solana remains the source of truth.");
 }
 const port = Number(process.env.PORT ?? "8787");
+const refreshOfac = () =>
+  sanctions.ensureFresh({
+    store: history ? createSupabaseOfacStore(history.supabase) : null,
+    expectedSha256: process.env.OFAC_SDN_SHA256 ?? null,
+  });
+await refreshOfac();
+setInterval(() => {
+  void refreshOfac();
+}, 24 * 60 * 60 * 1000);
 
 app.listen({ port, host: "127.0.0.1" }).then(() => {
   console.log(`Leash gate listening on http://127.0.0.1:${port}`);
@@ -80,6 +149,7 @@ function historyBackend() {
   const repository = new SupabaseRepository(supabase);
   return {
     db: repository,
+    supabase,
     deps: {
       db: repository,
       internalSecret,

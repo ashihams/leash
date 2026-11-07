@@ -1,10 +1,14 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import nacl from "tweetnacl";
 import bs58 from "bs58";
 import "dotenv/config";
-import { buildDemoHistory } from "../server/src/lib/outcomes.ts";
+import {
+  buildDemoHistory,
+  expectedGateOutcome,
+  vendorStats,
+} from "../server/src/lib/outcomes.ts";
 
 const DEMO_USERS = [
   { email: "owner@leash.local", role: "owner", name: "Demo Owner" },
@@ -63,7 +67,6 @@ if (listed.error) {
   console.error("Could not list auth users.");
   process.exit(1);
 }
-let reviewerId = "";
 for (const demo of DEMO_USERS) {
   const existing = listed.data.users.find((user) => user.email === demo.email);
   if (existing) {
@@ -83,7 +86,6 @@ for (const demo of DEMO_USERS) {
     console.error(`Could not create ${demo.email}.`);
     process.exit(1);
   }
-  if (demo.role === "reviewer") reviewerId = created.data.user.id;
   if (demo.role !== "auditor") {
     const updated = await supabase
       .from("profiles")
@@ -102,23 +104,12 @@ const vendors = plans.map((plan) => ({
   country: plan.country,
   category: 7,
   status: "active",
-  credential_expires_at: new Date(nowMs + 365 * 24 * 60 * 60 * 1000).toISOString(),
-  credential_is_mock: true,
+  credential_expires_at: null,
+  credential_is_mock: false,
 }));
 const vendorInsert = await supabase.from("vendors").insert(vendors);
 if (vendorInsert.error) {
   console.error("Could not seed vendors.");
-  process.exit(1);
-}
-
-const shadow = vendorKeys.shadow.publicKey;
-const screening = await supabase.from("screening_list").insert({
-  wallet: shadow,
-  list_version: 1,
-  label: "MOCK LIST - demo only",
-});
-if (screening.error) {
-  console.error("Could not seed the mock screening list.");
   process.exit(1);
 }
 
@@ -138,28 +129,17 @@ if (paymentInsert.error) {
   process.exit(1);
 }
 
-if (reviewerId) {
-  const linked = await supabase.from("linked_wallets").insert({
-    id: randomUUID(),
-    user_id: reviewerId,
-    wallet: reviewerKey.publicKey,
-    kind: "reviewer",
-    verified_at: new Date(nowMs).toISOString(),
-  });
-  if (linked.error) {
-    console.error("Could not link the reviewer wallet.");
-    process.exit(1);
-  }
-}
-
-console.log("MOCK demo data. Screening and credentials are not real checks.");
 console.log("Demo users: owner@leash.local, reviewer@leash.local, auditor@leash.local");
 console.log("Their password is SEED_DEMO_PASSWORD in .env.");
 for (const plan of plans) {
-  console.log(
-    `${plan.name}  ${vendorKeys[plan.key].publicKey}  ${plan.outcome}`,
+  const outcome = expectedGateOutcome(
+    vendorStats(plan.payments, false, nowMs),
   );
+  console.log(`${plan.name}  ${vendorKeys[plan.key].publicKey}  ${outcome}`);
 }
+console.log(
+  "No screening rows or credentials were seeded. Solana sanctions coverage is not assumed.",
+);
 console.log(`Buyer ${buyer.publicKey}`);
 console.log(`Reviewer wallet ${reviewerKey.publicKey}`);
 
