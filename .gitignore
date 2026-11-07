@@ -32,3 +32,9 @@ lerna-debug.log*
 
 # Compliance server keys and local evidence
 server/data
+
+# Supabase and local demo keypairs
+.env
+.env.*
+!.env.example
+keys/

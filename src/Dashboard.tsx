@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useWalletConnection } from "@solana/react-hooks";
 import nacl from "tweetnacl";
+import { AccountAccess } from "./AccountAccess";
+import { refreshMetaMask } from "./providers";
 import { Arrow, SiteHeader } from "./ui";
 import {
   base64ToBytes,
@@ -31,8 +33,34 @@ type LogLine = { title: string; detail: string };
 const BUDGET = 200;
 const PER_PAYMENT = 150;
 
+function walletErrorText(error: unknown) {
+  const message =
+    error instanceof Error
+      ? error.message
+      : error
+        ? "The wallet refused the connection."
+        : "";
+  if (!message) return "";
+  if (
+    message.includes("already pending") ||
+    message.includes("wallet_requestPermissions")
+  ) {
+    return "MetaMask already has a request open. Click the MetaMask icon in the toolbar and approve or reject it. Then click Connect MetaMask once.";
+  }
+  if (
+    message.includes("reading 'create'") ||
+    message.includes("No wallet connector")
+  ) {
+    return "MetaMask did not open. Unlock the MetaMask extension, turn on a Solana account, and try again.";
+  }
+  if (message.toLowerCase().includes("no accounts")) {
+    return "MetaMask returned no Solana account. Create or unlock a Solana account in MetaMask, then try again.";
+  }
+  return message;
+}
+
 export function Dashboard() {
-  const { connectors, connect, disconnect, wallet, status } =
+  const { connectors, connect, disconnect, error, wallet, status } =
     useWalletConnection();
   const demoOwner = useMemo(() => nacl.sign.keyPair(), []);
   const agent = useMemo(() => nacl.sign.keyPair(), []);
@@ -57,15 +85,23 @@ export function Dashboard() {
     []
   );
 
-  const [mint, setMint] = useState("");
   const [gateState, setGateState] = useState("The gate has not been checked.");
   const [mandateId, setMandateId] = useState(7);
   const [mandateAccount, setMandateAccount] = useState("");
-  const [mandateOwner, setMandateOwner] = useState("");
   const [vendorName, setVendorName] = useState(vendors[0].name);
   const [amount, setAmount] = useState("100");
   const [goal, setGoal] = useState("Buy a logo from a studio for 100 USDC.");
   const [busy, setBusy] = useState(false);
+  const [walletNote, setWalletNote] = useState("");
+  const connectLock = useRef(false);
+  const actionLock = useRef(false);
+  const session = useRef({
+    mandateId: 7,
+    mandateAccount: "",
+    mandateOwner: "",
+    mint: "",
+    corridorSet: false,
+  });
   const [log, setLog] = useState<LogLine[]>([]);
   const [lastPayment, setLastPayment] = useState("");
   const [funded, setFunded] = useState<{
@@ -85,98 +121,197 @@ export function Dashboard() {
   const vendor = vendors.find((item) => item.name === vendorName) ?? vendors[0];
 
   function push(title: string, detail: string) {
-    setLog((current) => [{ title, detail }, ...current].slice(0, 8));
+    setLog((current) => [{ title, detail }, ...current].slice(0, 12));
   }
+
+  function run(work: () => Promise<unknown>) {
+    if (actionLock.current) return;
+    actionLock.current = true;
+    setBusy(true);
+    work().finally(() => {
+      actionLock.current = false;
+      setBusy(false);
+    });
+  }
+
+  const readGate = useCallback(async (): Promise<string> => {
+    const result = await gate("/health");
+    if (result.status !== 200) {
+      setGateState("The gate answered, but not with a health record.");
+      return "";
+    }
+    const reportedMint = String(result.body.mint ?? "");
+    session.current.mint = reportedMint;
+    setGateState(
+      `Gate is up. Policy signer ${String(result.body.policySigner ?? "")}.`
+    );
+    return reportedMint;
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    readGate().catch(() => {
+      if (!cancelled) {
+        setGateState("The gate is not running. Start it with npm run server.");
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [readGate]);
+
+  useEffect(() => {
+    if (
+      connectors.some((connector) =>
+        connector.name.toLowerCase().includes("metamask"),
+      )
+    ) {
+      setWalletNote((note) =>
+        note.startsWith("Looking for MetaMask") ? "" : note,
+      );
+    }
+  }, [connectors]);
 
   async function checkGate() {
-    setBusy(true);
     try {
-      const result = await gate("/health");
-      if (result.status !== 200) {
-        setGateState("The gate answered, but not with a health record.");
-        return;
-      }
-      const reportedMint = String(result.body.mint ?? "");
-      setMint(reportedMint);
-      setGateState(
-        `Gate is up. Policy signer ${String(result.body.policySigner ?? "")}.`
-      );
+      await readGate();
     } catch {
       setGateState("The gate is not running. Start it with npm run server.");
-    } finally {
-      setBusy(false);
     }
   }
 
-  async function openMandate(nextId = mandateId) {
-    if (!mint) {
-      push(
-        "Mint missing",
-        "Check the gate so the dashboard can use its test mint."
-      );
-      return;
-    }
-    setBusy(true);
+  async function loadMint() {
+    if (session.current.mint) return session.current.mint;
     try {
-      const mandate = await mandatePda(ownerAddress, nextId);
-      const now = Math.floor(Date.now() / 1000);
-      for (const item of vendors) {
-        const registered = await gate("/vendors", {
-          wallet: item.address,
-          name: item.name,
-          country: item.country,
-          blocked: item.blocked,
-        });
-        if (registered.status >= 400) {
-          push(item.name, errorText(registered));
-          return;
-        }
-      }
-      const corridor = await gate("/corridors", {
-        fromCountry: "US",
-        toCountry: "US",
-        enabled: true,
-        perPaymentCap: usdcToBase(PER_PAYMENT),
-        dailyCap: usdcToBase(1000),
-        packetThreshold: 0,
+      return await readGate();
+    } catch {
+      setGateState("The gate is not running. Start it with npm run server.");
+      push("Gate", "The gate is not running on this machine.");
+      return "";
+    }
+  }
+
+  async function registerVendors() {
+    for (const item of vendors) {
+      const registered = await gate("/vendors", {
+        wallet: item.address,
+        name: item.name,
+        country: item.country,
+        blocked: item.blocked,
       });
-      if (corridor.status >= 400) {
-        push("Corridor", errorText(corridor));
-        return;
+      if (registered.status >= 400) {
+        push(item.name, errorText(registered));
+        return false;
       }
-      const created = await gate("/mandates", {
-        mandateId: nextId,
-        mandate,
+    }
+    return true;
+  }
+
+  async function writeCorridor(enabled: boolean) {
+    const result = await gate("/corridors", {
+      fromCountry: "US",
+      toCountry: "US",
+      enabled,
+      perPaymentCap: usdcToBase(PER_PAYMENT),
+      dailyCap: usdcToBase(1000),
+      packetThreshold: 0,
+    });
+    if (result.status >= 400) {
+      push("Corridor", errorText(result));
+      return false;
+    }
+    session.current.corridorSet = true;
+    return true;
+  }
+
+  async function ensureMandate(startId: number, reopenCorridor: boolean) {
+    const activeMint = await loadMint();
+    if (!activeMint) {
+      push("Gate", "The gate did not report the test mint.");
+      return null;
+    }
+    if (!(await registerVendors())) return null;
+    if (reopenCorridor || !session.current.corridorSet) {
+      if (!(await writeCorridor(true))) return null;
+    }
+    const who =
+      ownerAddress === connected ? "the connected wallet" : "the demo owner key";
+    if (
+      session.current.mandateAccount &&
+      session.current.mandateOwner === ownerAddress &&
+      (startId === session.current.mandateId || !reopenCorridor)
+    ) {
+      if (reopenCorridor) {
+        push(
+          "Mandate open",
+          `Mandate ${session.current.mandateId} is already open for ${who}. Budget ${BUDGET}.00 USDC.`
+        );
+      }
+      return {
+        id: session.current.mandateId,
+        account: session.current.mandateAccount,
         owner: ownerAddress,
-        agent: agentAddress,
-        budget: usdcToBase(BUDGET),
-        perPaymentLimit: usdcToBase(PER_PAYMENT),
-        maxUses: 4,
-        expiresAt: now + 86_400 * 10,
-        deliverySeconds: 3600,
-        acceptanceSeconds: 3600,
-        category: 7,
-        corridors: [{ fromCountry: "US", toCountry: "US" }],
-      });
-      if (created.status >= 400) {
-        push("Mandate", errorText(created));
-        return;
+        mint: activeMint,
+      };
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const skipped: number[] = [];
+    let id = startId;
+    try {
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        const mandate = String(await mandatePda(ownerAddress, id));
+        const created = await gate("/mandates", {
+          mandateId: id,
+          mandate,
+          owner: ownerAddress,
+          agent: agentAddress,
+          budget: usdcToBase(BUDGET),
+          perPaymentLimit: usdcToBase(PER_PAYMENT),
+          maxUses: 4,
+          expiresAt: now + 86_400 * 10,
+          deliverySeconds: 3600,
+          acceptanceSeconds: 3600,
+          category: 7,
+          corridors: [{ fromCountry: "US", toCountry: "US" }],
+        });
+        if (
+          created.status === 409 &&
+          errorText(created).includes("MANDATE_EXISTS")
+        ) {
+          skipped.push(id);
+          id += 1;
+          continue;
+        }
+        if (created.status >= 400) {
+          push("Mandate", errorText(created));
+          return null;
+        }
+        session.current.mandateId = id;
+        session.current.mandateAccount = mandate;
+        session.current.mandateOwner = ownerAddress;
+        setMandateId(id);
+        setMandateAccount(mandate);
+        push(
+          "Mandate open",
+          skipped.length > 0
+            ? `${skipped.length === 1 ? `Mandate ${skipped[0]} was` : `Mandates ${skipped.join(", ")} were`} already stored. Mandate ${id} is open for ${who}. Budget ${BUDGET}.00 USDC.`
+            : `Mandate ${id} for ${who}. Budget ${BUDGET}.00 USDC.`
+        );
+        return { id, account: mandate, owner: ownerAddress, mint: activeMint };
       }
-      setMandateId(nextId);
-      setMandateAccount(mandate);
-      setMandateOwner(ownerAddress);
-      push(
-        "Mandate open",
-        `Mandate ${nextId} for ${ownerAddress === connected ? "the connected wallet" : "the demo owner key"}. Budget ${BUDGET}.00 USDC.`
-      );
     } catch (error) {
       push(
         "Mandate",
         error instanceof Error ? error.message : "Could not open the mandate."
       );
-    } finally {
-      setBusy(false);
+      return null;
     }
+    push("Mandate", "The gate already has every mandate id this page tried.");
+    return null;
+  }
+
+  function openMandate(nextId = session.current.mandateId) {
+    return ensureMandate(nextId, true);
   }
 
   async function ask(next?: {
@@ -188,29 +323,23 @@ export function Dashboard() {
       vendors.find((item) => item.name === (next?.vendor ?? vendorName)) ??
       vendor;
     const usdc = Number(next?.usdc ?? amount);
-    if (!mandateAccount || mandateOwner !== ownerAddress) {
-      push(
-        "No mandate",
-        "Open a mandate for this owner before asking for a payment."
-      );
-      return;
-    }
     if (!Number.isFinite(usdc) || usdc <= 0) {
       push("Amount", "Enter a USDC amount greater than zero.");
-      return;
+      return null;
     }
-    setBusy(true);
+    const ready = await ensureMandate(session.current.mandateId, false);
+    if (!ready) return null;
     try {
       const paymentId = randomHex();
       const invoiceHash = randomHex();
       const base = usdcToBase(usdc);
       const fields = {
         paymentId,
-        mandateId,
-        mandate: mandateAccount,
-        buyer: ownerAddress,
+        mandateId: ready.id,
+        mandate: ready.account,
+        buyer: ready.owner,
         vendor: chosen.address,
-        mint,
+        mint: ready.mint,
         amount: base,
         fromCountry: "US",
         toCountry: "US",
@@ -222,28 +351,29 @@ export function Dashboard() {
         intentSignature: signIntent(agent.secretKey, {
           kind: 1,
           paymentId,
-          mandate: mandateAccount,
-          buyer: ownerAddress,
+          mandate: ready.account,
+          buyer: ready.owner,
           vendor: chosen.address,
-          mint,
+          mint: ready.mint,
           amount: base,
           invoiceHash,
         }),
       };
       const result = await gate("/clearances/fund", fields);
+      const clearance =
+        result.body.decision === "allow" &&
+        typeof result.body.message === "string" &&
+        typeof result.body.signature === "string"
+          ? {
+              message: result.body.message,
+              signature: result.body.signature,
+              signer: String(result.body.signer ?? ""),
+            }
+          : null;
       if (result.body.decision === "allow") {
         setLastPayment(paymentId);
         setFunded({ invoiceHash, amount: base, vendor: chosen.address });
-        if (
-          typeof result.body.message === "string" &&
-          typeof result.body.signature === "string"
-        ) {
-          setLastClearance({
-            message: result.body.message,
-            signature: result.body.signature,
-            signer: String(result.body.signer ?? ""),
-          });
-        }
+        if (clearance) setLastClearance(clearance);
       }
       const reasons = reasonsOf(result);
       push(
@@ -273,13 +403,20 @@ export function Dashboard() {
           "This mandate is revoked. Open a new one for the next payment."
         );
       }
+      return {
+        decision: String(result.body.decision ?? "deny"),
+        paymentId,
+        invoiceHash,
+        amount: base,
+        vendor: chosen.address,
+        clearance,
+      };
     } catch (error) {
       push(
         "Clearance",
         error instanceof Error ? error.message : "The request failed."
       );
-    } finally {
-      setBusy(false);
+      return null;
     }
   }
 
@@ -297,13 +434,35 @@ export function Dashboard() {
   }
 
   async function deliverAndRelease() {
-    if (!lastPayment || !mandateAccount || !funded) return;
-    setBusy(true);
+    let paymentId = lastPayment;
+    let payment = funded;
+    let account = session.current.mandateAccount;
+    let buyer = session.current.mandateOwner;
+    let activeMint = session.current.mint;
+    if (!paymentId || !payment || !account) {
+      const fundedPayment = await ask();
+      if (!fundedPayment || fundedPayment.decision !== "allow") {
+        push(
+          "Release",
+          "The gate did not allow a payment, so there is nothing to release."
+        );
+        return;
+      }
+      paymentId = fundedPayment.paymentId;
+      payment = {
+        invoiceHash: fundedPayment.invoiceHash,
+        amount: fundedPayment.amount,
+        vendor: fundedPayment.vendor,
+      };
+      account = session.current.mandateAccount;
+      buyer = session.current.mandateOwner;
+      activeMint = session.current.mint;
+    }
     try {
       const artifact = new TextEncoder().encode(`DLV1${goal}`.slice(0, 256));
       const receiptHash = await sha256Hex(artifact);
       const delivered = await gate("/payments/delivery", {
-        paymentId: lastPayment,
+        paymentId,
         receiptHash,
       });
       if (delivered.status >= 400) {
@@ -311,7 +470,7 @@ export function Dashboard() {
         return;
       }
       const verified = await gate("/payments/verify", {
-        paymentId: lastPayment,
+        paymentId,
         artifact: bytesToBase64(artifact),
       });
       if (verified.status >= 400) {
@@ -319,16 +478,16 @@ export function Dashboard() {
         return;
       }
       const release = await gate("/clearances/release", {
-        paymentId: lastPayment,
+        paymentId,
         intentSignature: signIntent(agent.secretKey, {
           kind: 2,
-          paymentId: lastPayment,
-          mandate: mandateAccount,
-          buyer: mandateOwner,
-          vendor: funded.vendor,
-          mint,
-          amount: funded.amount,
-          invoiceHash: funded.invoiceHash,
+          paymentId,
+          mandate: account,
+          buyer,
+          vendor: payment.vendor,
+          mint: activeMint,
+          amount: payment.amount,
+          invoiceHash: payment.invoiceHash,
         }),
       });
       push(
@@ -340,19 +499,19 @@ export function Dashboard() {
         "Release",
         error instanceof Error ? error.message : "Release failed."
       );
-    } finally {
-      setBusy(false);
     }
   }
 
-  function swapVendor() {
-    if (!lastClearance) {
-      push("Swap", "Ask for a clearance first.");
+  async function swapVendor() {
+    const clearance =
+      lastClearance ?? (await ask())?.clearance ?? null;
+    if (!clearance) {
+      push("Swap", "The gate did not sign a clearance, so there is nothing to swap.");
       return;
     }
-    const message = base64ToBytes(lastClearance.message);
-    const signature = base64ToBytes(lastClearance.signature);
-    const signer = decodeBase58(lastClearance.signer);
+    const message = base64ToBytes(clearance.message);
+    const signature = base64ToBytes(clearance.signature);
+    const signer = decodeBase58(clearance.signer);
     const swapped = message.slice();
     const other =
       vendors.find((item) => item.address !== vendor.address) ?? vendors[1];
@@ -366,32 +525,17 @@ export function Dashboard() {
   }
 
   async function disableCorridor() {
-    setBusy(true);
-    try {
-      await gate("/corridors", {
-        fromCountry: "US",
-        toCountry: "US",
-        enabled: false,
-        perPaymentCap: usdcToBase(PER_PAYMENT),
-        dailyCap: usdcToBase(1000),
-        packetThreshold: 0,
-      });
-      push(
-        "Corridor disabled",
-        "The honest gate should now refuse the next funding."
-      );
-      await ask();
-    } finally {
-      setBusy(false);
-    }
+    if (!(await writeCorridor(false))) return;
+    push(
+      "Corridor disabled",
+      "The honest gate should now refuse the next funding."
+    );
+    await ask();
   }
 
   async function forceAllow() {
-    if (!mandateAccount) {
-      push("Force", "Open a mandate first.");
-      return;
-    }
-    setBusy(true);
+    const ready = await ensureMandate(session.current.mandateId, false);
+    if (!ready) return;
     try {
       const paymentId = randomHex();
       const invoiceHash = randomHex();
@@ -400,11 +544,11 @@ export function Dashboard() {
         kind: "fund",
         decision: "allow",
         paymentId,
-        mandateId,
-        mandate: mandateAccount,
-        buyer: ownerAddress,
+        mandateId: ready.id,
+        mandate: ready.account,
+        buyer: ready.owner,
         vendor: vendor.address,
-        mint,
+        mint: ready.mint,
         amount: base,
         fromCountry: "US",
         toCountry: "US",
@@ -414,6 +558,10 @@ export function Dashboard() {
         invoiceAmount: base,
         invoiceCurrency: "USD",
       });
+      if (result.status >= 400) {
+        push("Force", errorText(result));
+        return;
+      }
       remember(result);
       push(
         "Forced allow",
@@ -421,27 +569,22 @@ export function Dashboard() {
       );
     } catch (error) {
       push("Force", error instanceof Error ? error.message : "Force failed.");
-    } finally {
-      setBusy(false);
     }
   }
 
   async function revoke() {
-    setBusy(true);
-    try {
-      const result = await gate("/mandates/revoke", { mandateId });
-      if (result.status >= 400) {
-        push("Revoke", errorText(result));
-        return;
-      }
-      push(
-        "Mandate revoked",
-        "The next honest funding should fail even if a signer is later forced."
-      );
-      await ask();
-    } finally {
-      setBusy(false);
+    const ready = await ensureMandate(session.current.mandateId, false);
+    if (!ready) return;
+    const result = await gate("/mandates/revoke", { mandateId: ready.id });
+    if (result.status >= 400) {
+      push("Revoke", errorText(result));
+      return;
     }
+    push(
+      "Mandate revoked",
+      "The next honest funding should fail even if a signer is later forced."
+    );
+    await ask();
   }
 
   return (
@@ -461,22 +604,69 @@ export function Dashboard() {
 
         <section className="k-block" aria-labelledby="wallet-title">
           <h2 id="wallet-title">Wallet</h2>
-          <p className="k-status">
-            {status === "connected" ? "Connected" : "Not connected"}
+          <p className="k-status" role="status">
+            {status === "connected"
+              ? "Connected"
+              : status === "connecting"
+                ? "Waiting for MetaMask"
+                : "Not connected"}
           </p>
+          {status === "connecting" ? (
+            <p role="status">
+              Click the MetaMask icon and approve the open request. Leave that
+              window open until it finishes.
+            </p>
+          ) : null}
+          {walletNote || walletErrorText(error) ? (
+            <p role="status">{walletNote || walletErrorText(error)}</p>
+          ) : null}
           <div className="k-connectors">
             {connectors.map((connector) => (
               <button
                 key={connector.id}
                 type="button"
                 className="k-action k-action-ghost"
-                onClick={() => connect(connector.id)}
-                disabled={status === "connecting" || busy}
+                onClick={() => {
+                  if (connectLock.current || status === "connecting") return;
+                  connectLock.current = true;
+                  setWalletNote("");
+                  connect(connector.id)
+                    .catch((caught: unknown) => {
+                      setWalletNote(
+                        walletErrorText(caught) ||
+                          "The wallet refused the connection.",
+                      );
+                    })
+                    .finally(() => {
+                      connectLock.current = false;
+                    });
+                }}
+                disabled={status === "connecting" || connectLock.current}
               >
-                {connector.name}
+                {connector.name.toLowerCase().includes("metamask")
+                  ? "Connect MetaMask"
+                  : connector.name}
                 <Arrow />
               </button>
             ))}
+            {connectors.some((connector) =>
+              connector.name.toLowerCase().includes("metamask"),
+            ) ? null : (
+              <button
+                type="button"
+                className="k-action k-action-ghost"
+                onClick={() => {
+                  setWalletNote(
+                    "Looking for MetaMask. Unlock the extension, then click Connect MetaMask again.",
+                  );
+                  refreshMetaMask();
+                }}
+                disabled={status === "connecting"}
+              >
+                Connect MetaMask
+                <Arrow />
+              </button>
+            )}
           </div>
           <p className="k-mono">
             {connected ?? "No wallet connected. The demo owner key is ready."}
@@ -484,13 +674,24 @@ export function Dashboard() {
           <button
             type="button"
             className="k-action k-action-ghost"
-            onClick={() => disconnect()}
-            disabled={status !== "connected"}
+            onClick={() => {
+              if (status !== "connected") {
+                push(
+                  "Wallet",
+                  "No wallet is connected. Connect MetaMask, or keep the demo owner key."
+                );
+                return;
+              }
+              disconnect();
+              push("Wallet", "Disconnected. The demo owner key is the mandate owner again.");
+            }}
           >
             Disconnect
             <Arrow direction="left" />
           </button>
         </section>
+
+        <AccountAccess wallet={wallet} />
 
         <section className="k-block" aria-labelledby="gate-title">
           <h2 id="gate-title">Gate</h2>
@@ -500,7 +701,7 @@ export function Dashboard() {
             <button
               type="button"
               className="k-action"
-              onClick={checkGate}
+              onClick={() => run(checkGate)}
               disabled={busy}
             >
               Check the gate
@@ -509,7 +710,7 @@ export function Dashboard() {
             <button
               type="button"
               className="k-action"
-              onClick={() => openMandate()}
+              onClick={() => run(() => openMandate())}
               disabled={busy}
             >
               Open a mandate
@@ -529,7 +730,7 @@ export function Dashboard() {
             className="k-form"
             onSubmit={(event) => {
               event.preventDefault();
-              void ask();
+              run(() => ask().then(() => undefined));
             }}
           >
             <label>
@@ -571,21 +772,18 @@ export function Dashboard() {
               <Arrow />
             </button>
           </form>
-          <details className="k-details">
-            <summary>Payment terms</summary>
-            <p>
-              {`Category 7. Purpose 1001. Corridor US to US. Invoice currency USD at one dollar to one USDC. Budget ${BUDGET}.00. Per payment ${PER_PAYMENT}.00. Last payment ${lastPayment || "none"}.`}
-              {lastClearance
-                ? ` Clearance signed for ${baseToUsdc(usdcToBase(Number(amount) || 0))} USDC.`
-                : ""}
-            </p>
-          </details>
+          <p className="k-terms">
+            {`Payment terms. Category 7. Purpose 1001. Corridor US to US. Invoice currency USD at one dollar to one USDC. Budget ${BUDGET}.00. Per payment ${PER_PAYMENT}.00. Last payment ${lastPayment || "none"}.`}
+            {lastClearance
+              ? ` Clearance signed for ${baseToUsdc(usdcToBase(Number(amount) || 0))} USDC.`
+              : ""}
+          </p>
           <div className="k-actions">
             <button
               type="button"
               className="k-action k-action-ghost"
-              onClick={deliverAndRelease}
-              disabled={busy || !lastPayment}
+              onClick={() => run(deliverAndRelease)}
+              disabled={busy}
             >
               Deliver and release
               <Arrow />
@@ -603,7 +801,7 @@ export function Dashboard() {
               <button
                 type="button"
                 className="k-action k-action-ghost"
-                onClick={swapVendor}
+                onClick={() => run(swapVendor)}
                 disabled={busy}
               >
                 Run the swap
@@ -619,7 +817,7 @@ export function Dashboard() {
               <button
                 type="button"
                 className="k-action k-action-ghost"
-                onClick={() => void disableCorridor()}
+                onClick={() => run(disableCorridor)}
                 disabled={busy}
               >
                 Close the corridor
@@ -628,7 +826,7 @@ export function Dashboard() {
               <button
                 type="button"
                 className="k-action k-action-ghost"
-                onClick={() => void forceAllow()}
+                onClick={() => run(forceAllow)}
                 disabled={busy}
               >
                 Force an allow
@@ -642,7 +840,7 @@ export function Dashboard() {
               <button
                 type="button"
                 className="k-action k-action-ghost"
-                onClick={() => void revoke()}
+                onClick={() => run(revoke)}
                 disabled={busy}
               >
                 Revoke
@@ -651,7 +849,9 @@ export function Dashboard() {
               <button
                 type="button"
                 className="k-action k-action-ghost"
-                onClick={() => void openMandate(mandateId + 1)}
+                onClick={() =>
+                  run(() => openMandate(session.current.mandateId + 1))
+                }
                 disabled={busy}
               >
                 Open the next mandate
