@@ -23,24 +23,7 @@ import {
   sha256,
   signClearance,
 } from "./clearance.ts";
-import {
-  commitCorridorSpend,
-  commitSpend,
-  getCorridor,
-  getMandate,
-  getPayment,
-  getVendor,
-  insertEvidence,
-  insertMandate,
-  insertPayment,
-  insertVendor,
-  listEvidence,
-  listProviderChecks,
-  revokeMandate,
-  transaction,
-  updatePayment,
-  upsertCorridor,
-} from "./db.ts";
+import { sqliteGateStore, type GateStore } from "./gate-store.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { runProviderGate, type ProviderGateResult } from "./providers/gate.ts";
 import {
@@ -57,7 +40,8 @@ const ZERO_HASH = "00".repeat(32);
 type KeyPair = { publicKey: Uint8Array; secretKey: Uint8Array };
 
 export type GateOptions = {
-  db: DatabaseSync;
+  db?: DatabaseSync;
+  store?: GateStore;
   policy: KeyPair;
   verifier: Uint8Array;
   mint: string;
@@ -81,6 +65,7 @@ export type GateOptions = {
 };
 
 export function buildApp(options: GateOptions): FastifyInstance {
+  const store = options.store ?? sqliteGateStore(options.db as DatabaseSync);
   const app = Fastify({ logger: false });
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const ttl = options.clearanceTtlSeconds ?? 120;
@@ -110,7 +95,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
 
   app.post("/vendors", async (request) => {
     const body = record(request.body);
-    insertVendor(options.db, {
+    await store.insertVendor({
       wallet: pubkey(body.wallet, "WALLET").text,
       name: text(body.name, "NAME"),
       country: country(body.country),
@@ -121,7 +106,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
 
   app.post("/corridors", async (request) => {
     const body = record(request.body);
-    upsertCorridor(options.db, {
+    await store.upsertCorridor({
       fromCountry: country(body.fromCountry),
       toCountry: country(body.toCountry),
       enabled: body.enabled !== false,
@@ -155,7 +140,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
       throw new HttpError(400, "BAD_LIMIT");
     if (mandate.expiresAt <= now()) throw new HttpError(400, "MANDATE_EXPIRED");
     try {
-      insertMandate(options.db, mandate);
+      await store.insertMandate(mandate);
     } catch (error) {
       if (isUnique(error)) throw new HttpError(409, "MANDATE_EXISTS");
       throw error;
@@ -166,16 +151,16 @@ export function buildApp(options: GateOptions): FastifyInstance {
   app.post("/mandates/revoke", async (request) => {
     const body = record(request.body);
     const mandateId = nonNegative(body.mandateId);
-    if (!getMandate(options.db, mandateId))
+    if (!(await store.getMandate(mandateId)))
       throw new HttpError(404, "MANDATE_UNKNOWN");
-    revokeMandate(options.db, mandateId);
+    await store.revokeMandate(mandateId);
     return { ok: true };
   });
 
   app.post("/clearances/fund", async (request) => {
     const body = record(request.body);
     const fields = readPaymentFields(body);
-    const mandate = getMandate(options.db, fields.mandateId);
+    const mandate = await store.getMandate(fields.mandateId);
     const intentOk = mandate
       ? verifyIntent(KIND_FUND, fields, mandate.agent, body.intentSignature)
       : false;
@@ -197,7 +182,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
     const evaluation = evaluateFund({
       now: now(),
       configuredMint,
-      paymentSeen: getPayment(options.db, fields.paymentId.text) !== undefined,
+      paymentSeen: (await store.getPayment(fields.paymentId.text)) !== undefined,
       intentOk,
       mandateAccount: fields.mandate.text,
       buyer: fields.buyer.text,
@@ -212,8 +197,8 @@ export function buildApp(options: GateOptions): FastifyInstance {
       invoiceCurrency: fields.invoiceCurrency,
       packetHash: fields.packetHash.bytes,
       mandate,
-      vendorRow: getVendor(options.db, fields.vendor.text),
-      corridor: getCorridor(options.db, fields.fromCountry, fields.toCountry),
+      vendorRow: await store.getVendor(fields.vendor.text),
+      corridor: await store.getCorridor(fields.fromCountry, fields.toCountry),
     });
     if (!providerResult.ok) {
       evaluation.ok = false;
@@ -235,50 +220,40 @@ export function buildApp(options: GateOptions): FastifyInstance {
     }
     const decision = evaluation.ok ? DECISION_ALLOW : DECISION_DENY;
     if (evaluation.ok && mandate) {
-      transaction(options.db, () => {
-        const fresh = getMandate(options.db, fields.mandateId);
-        const seen = getPayment(options.db, fields.paymentId.text);
-        if (
-          !fresh ||
-          seen ||
-          fresh.spent + fields.amount > fresh.budget ||
-          fresh.uses >= fresh.maxUses
-        ) {
+      try {
+        await store.commitFund(
+          {
+            paymentId: fields.paymentId.text,
+            mandateId: fields.mandateId,
+            mandate: fields.mandate.text,
+            buyer: fields.buyer.text,
+            agent: mandate.agent,
+            vendor: fields.vendor.text,
+            mint: fields.mint.text,
+            amount: fields.amount,
+            fromCountry: fields.fromCountry,
+            toCountry: fields.toCountry,
+            category: fields.category,
+            purposeCode: fields.purposeCode,
+            invoiceHash: fields.invoiceHash.text,
+            invoiceAmount: fields.invoiceAmount,
+            packetHash: fields.packetHash.text,
+            state: "funded",
+            receiptHash: null,
+            verificationHash: null,
+            deliveryDeadline: now() + mandate.deliverySeconds,
+            acceptanceDeadline: 0,
+          },
+          Math.floor(now() / DAY_SECONDS),
+        );
+      } catch (error) {
+        if (error instanceof Error && error.message === "BUDGET") {
           throw new HttpError(409, "BUDGET");
         }
-        commitSpend(options.db, fields.mandateId, fields.amount);
-        commitCorridorSpend(
-          options.db,
-          fields.fromCountry,
-          fields.toCountry,
-          fields.amount,
-          Math.floor(now() / DAY_SECONDS)
-        );
-        insertPayment(options.db, {
-          paymentId: fields.paymentId.text,
-          mandateId: fields.mandateId,
-          mandate: fields.mandate.text,
-          buyer: fields.buyer.text,
-          agent: fresh.agent,
-          vendor: fields.vendor.text,
-          mint: fields.mint.text,
-          amount: fields.amount,
-          fromCountry: fields.fromCountry,
-          toCountry: fields.toCountry,
-          category: fields.category,
-          purposeCode: fields.purposeCode,
-          invoiceHash: fields.invoiceHash.text,
-          invoiceAmount: fields.invoiceAmount,
-          packetHash: fields.packetHash.text,
-          state: "funded",
-          receiptHash: null,
-          verificationHash: null,
-          deliveryDeadline: now() + fresh.deliverySeconds,
-          acceptanceDeadline: 0,
-        });
-      });
+        throw error;
+      }
     }
-    return sign(options, {
+    return sign(options, store, {
       now: now(),
       ttl,
       kind: KIND_FUND,
@@ -293,15 +268,15 @@ export function buildApp(options: GateOptions): FastifyInstance {
     const body = record(request.body);
     const paymentId = hash(body.paymentId, "PAYMENT_ID").text;
     const receipt = hash(body.receiptHash, "RECEIPT_HASH").text;
-    const payment = getPayment(options.db, paymentId);
+    const payment = await store.getPayment(paymentId);
     if (!payment) throw new HttpError(404, "PAYMENT_UNKNOWN");
     if (payment.state !== "funded") throw new HttpError(409, "BAD_STATE");
     if (now() >= payment.deliveryDeadline)
       throw new HttpError(409, "DELIVERY_LATE");
     if (receipt === ZERO_HASH) throw new HttpError(400, "BAD_RECEIPT");
-    const mandate = getMandate(options.db, payment.mandateId);
+    const mandate = await store.getMandate(payment.mandateId);
     if (!mandate) throw new HttpError(404, "MANDATE_UNKNOWN");
-    updatePayment(options.db, paymentId, {
+    await store.updatePayment(paymentId, {
       state: "delivered",
       receiptHash: receipt,
       acceptanceDeadline: now() + mandate.acceptanceSeconds,
@@ -312,7 +287,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
   app.post("/payments/verify", async (request) => {
     const body = record(request.body);
     const paymentId = hash(body.paymentId, "PAYMENT_ID").text;
-    const payment = getPayment(options.db, paymentId);
+    const payment = await store.getPayment(paymentId);
     if (!payment) throw new HttpError(404, "PAYMENT_UNKNOWN");
     if (payment.state !== "delivered") throw new HttpError(409, "BAD_STATE");
     if (now() >= payment.acceptanceDeadline)
@@ -320,7 +295,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
     const artifact = artifactBytes(body.artifact);
     const digest = encodeHex(sha256(artifact));
     if (digest !== payment.receiptHash) throw new HttpError(400, "BAD_RECEIPT");
-    updatePayment(options.db, paymentId, {
+    await store.updatePayment(paymentId, {
       state: "verified",
       verificationHash: digest,
     });
@@ -330,7 +305,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
   app.post("/clearances/release", async (request) => {
     const body = record(request.body);
     const paymentId = hash(body.paymentId, "PAYMENT_ID").text;
-    const payment = getPayment(options.db, paymentId);
+    const payment = await store.getPayment(paymentId);
     if (!payment) throw new HttpError(404, "PAYMENT_UNKNOWN");
     const dispute = bool(body.dispute);
     const fields = fieldsFromPayment(payment);
@@ -349,8 +324,8 @@ export function buildApp(options: GateOptions): FastifyInstance {
       ) {
         throw new HttpError(409, "BAD_STATE");
       }
-      updatePayment(options.db, paymentId, { state: "disputed" });
-      return sign(options, {
+      await store.updatePayment(paymentId, { state: "disputed" });
+      return sign(options, store, {
         now: now(),
         ttl,
         kind: KIND_RELEASE,
@@ -371,12 +346,12 @@ export function buildApp(options: GateOptions): FastifyInstance {
       configuredMint,
       intentOk,
       vendorIsZero: isZero(vendorBytes),
-      payment: getPayment(options.db, paymentId),
-      vendorRow: getVendor(options.db, payment.vendor),
-      corridor: getCorridor(options.db, payment.fromCountry, payment.toCountry),
+      payment: await store.getPayment(paymentId),
+      vendorRow: await store.getVendor(payment.vendor),
+      corridor: await store.getCorridor(payment.fromCountry, payment.toCountry),
     });
     if (!evaluation.ok) {
-      insertEvidence(options.db, {
+      await store.insertEvidence({
         createdAt: now(),
         kind: "release",
         decision: "deny",
@@ -399,7 +374,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
         checksFailed: evaluation.checksFailed,
       });
     }
-    const signed = sign(options, {
+    const signed = sign(options, store, {
       now: now(),
       ttl,
       kind: KIND_RELEASE,
@@ -428,7 +403,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
           ? DECISION_ALLOW
           : -1;
     if (decision < 0) throw new HttpError(400, "BAD_DECISION");
-    return sign(options, {
+    return sign(options, store, {
       now: now(),
       ttl,
       kind,
@@ -447,12 +422,12 @@ export function buildApp(options: GateOptions): FastifyInstance {
   app.get("/evidence/:paymentId", async (request) => {
     const params = request.params as { paymentId: string };
     const paymentId = hash(params.paymentId, "PAYMENT_ID").text;
-    const providerChecks = listProviderChecks(options.db, paymentId);
+    const providerChecks = await store.listProviderChecks(paymentId);
     const notes = providerChecks
       .map((check) => check.publicNote)
       .filter((note) => note.length > 0);
     return {
-      evidence: listEvidence(options.db, paymentId),
+      evidence: await store.listEvidence(paymentId),
       providerChecks,
       notes,
     };
@@ -461,8 +436,9 @@ export function buildApp(options: GateOptions): FastifyInstance {
   return app;
 }
 
-function sign(
+async function sign(
   options: GateOptions,
+  store: GateStore,
   input: {
     now: number;
     ttl: number;
@@ -512,7 +488,7 @@ function sign(
     evidenceId: 0,
     clearanceHash: encodeHex(sha256(message)),
   };
-  const evidenceId = insertEvidence(options.db, {
+  const evidenceId = await store.insertEvidence({
     createdAt: input.now,
     kind: input.kind === KIND_FUND ? "fund" : "release",
     decision: input.decision === DECISION_ALLOW ? "allow" : "deny",

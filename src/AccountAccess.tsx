@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import type { WalletSession } from "@solana/client";
 import bs58 from "bs58";
 import { supabase } from "./lib/supabase";
-import { Arrow } from "./ui";
 
 const GATE = import.meta.env.VITE_GATE_URL ?? "/gate";
 const SIGN_IN_STATEMENT = "Sign in to Leash. This does not move funds or approve a payment.";
@@ -127,8 +126,10 @@ export function AccountAccess({ wallet }: { wallet?: WalletSession }) {
 
   if (!supabase) {
     return (
-      <section className="k-block" aria-labelledby="account-title">
-        <h2 id="account-title">Account</h2>
+      <section className="d-account" aria-labelledby="account-title">
+        <p className="d-section-title" id="account-title">
+          Account
+        </p>
         <p>
           Supabase is not configured. Set VITE_SUPABASE_URL and
           VITE_SUPABASE_ANON_KEY to turn on dashboard login. The service key
@@ -140,8 +141,10 @@ export function AccountAccess({ wallet }: { wallet?: WalletSession }) {
   const client = supabase;
 
   return (
-    <section className="k-block" aria-labelledby="account-title">
-      <h2 id="account-title">Account</h2>
+    <section className="d-account" aria-labelledby="account-title">
+      <p className="d-section-title" id="account-title">
+        Account
+      </p>
       <p role="status">
         {sessionEmail
           ? `Signed in as ${sessionEmail}`
@@ -153,7 +156,7 @@ export function AccountAccess({ wallet }: { wallet?: WalletSession }) {
         </p>
       ) : null}
       <form
-        className="k-form"
+        className="d-form"
         onSubmit={(event) => {
           event.preventDefault();
           run(async () => {
@@ -188,15 +191,15 @@ export function AccountAccess({ wallet }: { wallet?: WalletSession }) {
             onChange={(event) => setPassword(event.target.value)}
           />
         </label>
-        <div className="k-actions">
-          <button className="k-action" type="submit" disabled={busy}>
+        <div className="d-actions">
+          <button className="d-btn d-btn-primary" type="submit" disabled={busy} aria-busy={busy}>
             Sign in
-            <Arrow />
           </button>
           <button
-            className="k-action k-action-ghost"
+            className="d-btn d-btn-secondary"
             type="button"
             disabled={busy}
+            aria-busy={busy}
             onClick={() =>
               run(async () => {
                 const { error } = await client.auth.signUp({ email, password });
@@ -213,12 +216,12 @@ export function AccountAccess({ wallet }: { wallet?: WalletSession }) {
             }
           >
             Create account
-            <Arrow />
           </button>
           <button
-            className="k-action k-action-ghost"
+            className="d-btn d-btn-secondary"
             type="button"
             disabled={busy || !email}
+            aria-busy={busy}
             onClick={() =>
               run(async () => {
                 const { error } = await client.auth.signInWithOtp({ email });
@@ -234,34 +237,34 @@ export function AccountAccess({ wallet }: { wallet?: WalletSession }) {
             }
           >
             Email a magic link
-            <Arrow />
           </button>
         </div>
       </form>
-      <div className="k-actions">
+      <div className="d-actions">
         <button
-          className="k-action"
+          className="d-btn d-btn-secondary"
           type="button"
           disabled={busy}
+          aria-busy={busy}
           onClick={() => run(signInWithSolana)}
         >
           Sign in with Solana
-          <Arrow />
         </button>
         <button
-          className="k-action k-action-ghost"
+          className="d-btn d-btn-secondary"
           type="button"
           disabled={busy}
+          aria-busy={busy}
           onClick={() => run(linkWallet)}
         >
           Link this wallet
-          <Arrow />
         </button>
         {sessionEmail ? (
           <button
-            className="k-action k-action-ghost"
+            className="d-btn d-btn-ghost"
             type="button"
             disabled={busy}
+            aria-busy={busy}
             onClick={() =>
               run(async () => {
                 await client.auth.signOut();
@@ -270,7 +273,6 @@ export function AccountAccess({ wallet }: { wallet?: WalletSession }) {
             }
           >
             Sign out
-            <Arrow direction="left" />
           </button>
         ) : null}
       </div>
