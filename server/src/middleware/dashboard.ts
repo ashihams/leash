@@ -10,7 +10,7 @@ export type DashboardIdentity = {
 export async function requireProfile(
   request: FastifyRequest,
   getDashboardUser: (token: string) => Promise<DashboardIdentity | null>,
-  getProfile: (userId: string) => Promise<Profile | null>,
+  getProfile: (userId: string) => Promise<Profile | null>
 ): Promise<Profile> {
   const header = request.headers.authorization;
   if (!header?.startsWith("Bearer ")) {

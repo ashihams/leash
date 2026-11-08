@@ -13,7 +13,7 @@ const require = createRequire(import.meta.url);
 const sax = require("sax") as {
   createStream: (
     strict: boolean,
-    options: { trim: boolean; xmlns: boolean },
+    options: { trim: boolean; xmlns: boolean }
   ) => NodeJS.WritableStream & {
     on(event: "opentag", listener: (tag: SaxTag) => void): unknown;
     on(event: "text" | "cdata", listener: (text: string) => void): unknown;
@@ -36,7 +36,7 @@ const ADDRESS_PREFIX = "Digital Currency Address - ";
 const FRESH_MS = 24 * 60 * 60 * 1000;
 const STALE_MS = 72 * 60 * 60 * 1000;
 const CACHE_PATH = fileURLToPath(
-  new URL("../../data/ofac-index.json", import.meta.url),
+  new URL("../../data/ofac-index.json", import.meta.url)
 );
 
 export type OfacAddress = {
@@ -58,7 +58,12 @@ export type OfacSnapshot = {
 };
 
 export class OfacScreenError extends Error {
-  code: "PARAMS_INVALID" | "LIST_STALE" | "CHECK_UNAVAILABLE" | "HASH_MISMATCH" | "EMPTY_LIST";
+  code:
+    | "PARAMS_INVALID"
+    | "LIST_STALE"
+    | "CHECK_UNAVAILABLE"
+    | "HASH_MISMATCH"
+    | "EMPTY_LIST";
 
   constructor(code: OfacScreenError["code"]) {
     super(code);
@@ -68,7 +73,10 @@ export class OfacScreenError extends Error {
 
 type Hit = { currency: string; sdnEntryId: string; programs: string[] };
 
-export function ofacNoMatchStatement(retrievedAt: string, sha256: string): string {
+export function ofacNoMatchStatement(
+  retrievedAt: string,
+  sha256: string
+): string {
   const date = retrievedAt.slice(0, 10);
   return `No match on the OFAC SDN list (US Treasury), retrieved ${date}, sha256 ${sha256}. OFAC states its digital currency address listings are not exhaustive. EU, UN and other lists are not covered.`;
 }
@@ -98,7 +106,9 @@ export function normalizeListedAddress(address: string): string {
   return value;
 }
 
-export function countByCurrency(addresses: OfacAddress[]): Record<string, number> {
+export function countByCurrency(
+  addresses: OfacAddress[]
+): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const row of addresses) {
     counts[row.currencySymbol] = (counts[row.currencySymbol] ?? 0) + 1;
@@ -120,7 +130,8 @@ export class OfacSdnProvider implements SanctionsScreeningProvider {
   }
 
   load(snapshot: OfacSnapshot): void {
-    if (snapshot.addresses.length === 0) throw new OfacScreenError("EMPTY_LIST");
+    if (snapshot.addresses.length === 0)
+      throw new OfacScreenError("EMPTY_LIST");
     this.hits.clear();
     for (const row of snapshot.addresses) {
       const current = this.hits.get(row.address);
@@ -129,7 +140,8 @@ export class OfacSdnProvider implements SanctionsScreeningProvider {
         sdnEntryId: row.sdnEntryId,
         programs: row.programs,
       };
-      if (!current || row.currencySymbol === "SOL") this.hits.set(row.address, next);
+      if (!current || row.currencySymbol === "SOL")
+        this.hits.set(row.address, next);
     }
     this.meta = snapshot;
   }
@@ -171,20 +183,26 @@ export class OfacSdnProvider implements SanctionsScreeningProvider {
         listVersion: this.meta.id,
         retrieved_at: this.meta.retrievedAt,
         sha256: this.meta.sha256,
-        statement: ofacNoMatchStatement(this.meta.retrievedAt, this.meta.sha256),
+        statement: ofacNoMatchStatement(
+          this.meta.retrievedAt,
+          this.meta.sha256
+        ),
       },
     };
   }
 
-  async ensureFresh(options: {
-    fetchImpl?: typeof fetch;
-    store?: { save(snapshot: OfacSnapshot): Promise<void> } | null;
-    cachePath?: string;
-    expectedSha256?: string | null;
-  } = {}): Promise<void> {
+  async ensureFresh(
+    options: {
+      fetchImpl?: typeof fetch;
+      store?: { save(snapshot: OfacSnapshot): Promise<void> } | null;
+      cachePath?: string;
+      expectedSha256?: string | null;
+    } = {}
+  ): Promise<void> {
     const cachePath = options.cachePath ?? CACHE_PATH;
     if (!this.meta) this.readCache(cachePath);
-    if (this.meta && this.now() - Date.parse(this.meta.retrievedAt) <= FRESH_MS) return;
+    if (this.meta && this.now() - Date.parse(this.meta.retrievedAt) <= FRESH_MS)
+      return;
     try {
       const snapshot = await downloadOfacSnapshot({
         fetchImpl: options.fetchImpl,
@@ -196,11 +214,20 @@ export class OfacSdnProvider implements SanctionsScreeningProvider {
       await options.store?.save(snapshot);
     } catch (error) {
       if (error instanceof OfacScreenError && error.code === "HASH_MISMATCH") {
-        console.error("OFAC refresh failed. The file hash does not match the published digest.");
-      } else if (error instanceof OfacScreenError && error.code === "EMPTY_LIST") {
-        console.error("OFAC refresh failed. The file contained no digital currency addresses.");
+        console.error(
+          "OFAC refresh failed. The file hash does not match the published digest."
+        );
+      } else if (
+        error instanceof OfacScreenError &&
+        error.code === "EMPTY_LIST"
+      ) {
+        console.error(
+          "OFAC refresh failed. The file contained no digital currency addresses."
+        );
       } else {
-        console.error("OFAC refresh failed. Screening stays on the last loaded list.");
+        console.error(
+          "OFAC refresh failed. Screening stays on the last loaded list."
+        );
       }
     }
   }
@@ -228,23 +255,29 @@ export class OfacSdnProvider implements SanctionsScreeningProvider {
   }
 }
 
-export async function downloadOfacSnapshot(options: {
-  url?: string;
-  fetchImpl?: typeof fetch;
-  expectedSha256?: string | null;
-  retrievedAt?: string;
-} = {}): Promise<OfacSnapshot> {
+export async function downloadOfacSnapshot(
+  options: {
+    url?: string;
+    fetchImpl?: typeof fetch;
+    expectedSha256?: string | null;
+    retrievedAt?: string;
+  } = {}
+): Promise<OfacSnapshot> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const url = options.url ?? OFAC_SOURCE_URL;
   let last: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const response = await fetchImpl(url, { signal: AbortSignal.timeout(120_000) });
-      if (!response.ok || !response.body) throw new OfacScreenError("CHECK_UNAVAILABLE");
+      const response = await fetchImpl(url, {
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!response.ok || !response.body)
+        throw new OfacScreenError("CHECK_UNAVAILABLE");
       const digest = officialSha256FromDigest(response.headers.get("digest"));
       const read = await readHashedXml(readableFrom(response.body));
       const official = options.expectedSha256?.toLowerCase() ?? digest;
-      if (official && official !== read.sha256) throw new OfacScreenError("HASH_MISMATCH");
+      if (official && official !== read.sha256)
+        throw new OfacScreenError("HASH_MISMATCH");
       if (read.addresses.length === 0) throw new OfacScreenError("EMPTY_LIST");
       const counts = countByCurrency(read.addresses);
       return {
@@ -258,7 +291,11 @@ export async function downloadOfacSnapshot(options: {
         addresses: read.addresses,
       };
     } catch (error) {
-      if (error instanceof OfacScreenError && error.code !== "CHECK_UNAVAILABLE") throw error;
+      if (
+        error instanceof OfacScreenError &&
+        error.code !== "CHECK_UNAVAILABLE"
+      )
+        throw error;
       last = error;
     }
   }
@@ -287,12 +324,14 @@ export function createSupabaseOfacStore(client: SupabaseClient): {
       }
       const versionId = inserted.data.id as string;
       for (let index = 0; index < snapshot.addresses.length; index += 500) {
-        const chunk = snapshot.addresses.slice(index, index + 500).map((row) => ({
-          version_id: versionId,
-          address: row.address,
-          currency: row.currencySymbol,
-          sdn_entry_id: row.sdnEntryId,
-        }));
+        const chunk = snapshot.addresses
+          .slice(index, index + 500)
+          .map((row) => ({
+            version_id: versionId,
+            address: row.address,
+            currency: row.currencySymbol,
+            sdn_entry_id: row.sdnEntryId,
+          }));
         const wrote = await client.from("ofac_addresses").insert(chunk);
         if (wrote.error) throw new OfacScreenError("CHECK_UNAVAILABLE");
       }
@@ -301,9 +340,14 @@ export function createSupabaseOfacStore(client: SupabaseClient): {
         .select("id")
         .order("retrieved_at", { ascending: false });
       if (listed.error) throw new OfacScreenError("CHECK_UNAVAILABLE");
-      const drop = versionsToDrop((listed.data ?? []).map((row) => String(row.id)));
+      const drop = versionsToDrop(
+        (listed.data ?? []).map((row) => String(row.id))
+      );
       for (const id of drop) {
-        const removed = await client.from("ofac_list_versions").delete().eq("id", id);
+        const removed = await client
+          .from("ofac_list_versions")
+          .delete()
+          .eq("id", id);
         if (removed.error) throw new OfacScreenError("CHECK_UNAVAILABLE");
       }
     },
@@ -312,12 +356,16 @@ export function createSupabaseOfacStore(client: SupabaseClient): {
 
 type PendingAddress = { address: string; symbol: string; profileId: string };
 
-export async function parseOfacAdvancedXml(xml: Buffer | string): Promise<OfacAddress[]> {
+export async function parseOfacAdvancedXml(
+  xml: Buffer | string
+): Promise<OfacAddress[]> {
   const read = await readHashedXml(Readable.from([xml]));
   return read.addresses;
 }
 
-async function readHashedXml(stream: Readable): Promise<{ sha256: string; addresses: OfacAddress[] }> {
+async function readHashedXml(
+  stream: Readable
+): Promise<{ sha256: string; addresses: OfacAddress[] }> {
   const hash = createHash("sha256");
   const parser = sax.createStream(true, { trim: false, xmlns: false });
   const featureTypes = new Map<string, string>();
@@ -327,7 +375,11 @@ async function readHashedXml(stream: Readable): Promise<{ sha256: string; addres
   const entryProfiles = new Map<string, string>();
   const entryPrograms = new Map<string, Set<string>>();
   const pending: PendingAddress[] = [];
-  const stack: Array<{ name: string; attrs: Record<string, string>; text: string }> = [];
+  const stack: Array<{
+    name: string;
+    attrs: Record<string, string>;
+    text: string;
+  }> = [];
   let profileId = "";
   let currency: string | null = null;
   let entryId = "";
@@ -349,18 +401,26 @@ async function readHashedXml(stream: Readable): Promise<{ sha256: string; addres
         return;
       }
       if (name === "Profile") profileId = attrs.ID ?? "";
-      if (name === "Feature") currency = featureTypes.get(attrs.FeatureTypeID ?? "") ?? null;
-      if (name === "SanctionsEntryReference" && profileId && attrs.SanctionsEntryID) {
+      if (name === "Feature")
+        currency = featureTypes.get(attrs.FeatureTypeID ?? "") ?? null;
+      if (
+        name === "SanctionsEntryReference" &&
+        profileId &&
+        attrs.SanctionsEntryID
+      ) {
         const set = profileEntries.get(profileId) ?? new Set<string>();
         set.add(attrs.SanctionsEntryID);
         profileEntries.set(profileId, set);
       }
       if (name === "SanctionsEntry") {
         entryId = attrs.ID ?? "";
-        if (entryId && attrs.ProfileID) entryProfiles.set(entryId, attrs.ProfileID);
+        if (entryId && attrs.ProfileID)
+          entryProfiles.set(entryId, attrs.ProfileID);
       }
       if (name === "EntryEvent" && entryId && attrs.LegalBasisID) {
-        const program = programs.get(legalBasisProgramId.get(attrs.LegalBasisID) ?? "");
+        const program = programs.get(
+          legalBasisProgramId.get(attrs.LegalBasisID) ?? ""
+        );
         if (program) {
           const set = entryPrograms.get(entryId) ?? new Set<string>();
           set.add(program);
@@ -386,13 +446,23 @@ async function readHashedXml(stream: Readable): Promise<{ sha256: string; addres
       if (!closed) return;
       const text = closed.text.trim();
       if (closed.name === "FeatureType" && text.startsWith(ADDRESS_PREFIX)) {
-        featureTypes.set(closed.attrs.ID ?? "", text.slice(ADDRESS_PREFIX.length).trim());
+        featureTypes.set(
+          closed.attrs.ID ?? "",
+          text.slice(ADDRESS_PREFIX.length).trim()
+        );
       }
       if (closed.name === "SanctionsProgram" && closed.attrs.ID) {
         programs.set(closed.attrs.ID, text);
       }
-      if (closed.name === "LegalBasis" && closed.attrs.ID && closed.attrs.SanctionsProgramID) {
-        legalBasisProgramId.set(closed.attrs.ID, closed.attrs.SanctionsProgramID);
+      if (
+        closed.name === "LegalBasis" &&
+        closed.attrs.ID &&
+        closed.attrs.SanctionsProgramID
+      ) {
+        legalBasisProgramId.set(
+          closed.attrs.ID,
+          closed.attrs.SanctionsProgramID
+        );
       }
       if (closed.name === "VersionDetail" && currency && text && profileId) {
         pending.push({
@@ -414,14 +484,22 @@ async function readHashedXml(stream: Readable): Promise<{ sha256: string; addres
   }
   parser.end();
   await done;
-  return { sha256: hash.digest("hex"), addresses: finishAddresses(pending, profileEntries, entryProfiles, entryPrograms) };
+  return {
+    sha256: hash.digest("hex"),
+    addresses: finishAddresses(
+      pending,
+      profileEntries,
+      entryProfiles,
+      entryPrograms
+    ),
+  };
 }
 
 function finishAddresses(
   pending: PendingAddress[],
   profileEntries: Map<string, Set<string>>,
   entryProfiles: Map<string, string>,
-  entryPrograms: Map<string, Set<string>>,
+  entryPrograms: Map<string, Set<string>>
 ): OfacAddress[] {
   const grouped = new Map<string, OfacAddress>();
   for (const row of pending) {
@@ -431,7 +509,8 @@ function finishAddresses(
     }
     const programNames = new Set<string>();
     for (const entryId of entryIds) {
-      for (const program of entryPrograms.get(entryId) ?? []) programNames.add(program);
+      for (const program of entryPrograms.get(entryId) ?? [])
+        programNames.add(program);
     }
     const next: OfacAddress = {
       address: row.address,
@@ -446,17 +525,21 @@ function finishAddresses(
       continue;
     }
     const ids = new Set(
-      [...existing.sdnEntryId.split(","), ...next.sdnEntryId.split(",")].filter(Boolean),
+      [...existing.sdnEntryId.split(","), ...next.sdnEntryId.split(",")].filter(
+        Boolean
+      )
     );
     existing.sdnEntryId = [...ids].sort().join(",");
-    existing.programs = [...new Set([...existing.programs, ...next.programs])].sort();
+    existing.programs = [
+      ...new Set([...existing.programs, ...next.programs]),
+    ].sort();
   }
   return [...grouped.values()];
 }
 
 function appendText(
   stack: Array<{ name: string; text: string }>,
-  text: string,
+  text: string
 ): void {
   const current = stack[stack.length - 1];
   if (!current) return;

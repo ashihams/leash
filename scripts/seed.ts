@@ -21,7 +21,9 @@ type SavedKey = { publicKey: string; secretKey: string };
 const url = process.env.SUPABASE_URL;
 const serviceKey = process.env.SUPABASE_SERVICE_KEY;
 if (!url || !serviceKey) {
-  console.error("Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env before seeding.");
+  console.error(
+    "Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env before seeding."
+  );
   process.exit(1);
 }
 
@@ -47,7 +49,11 @@ for (const plan of plans) {
 if (!saved || !saved.reviewer) {
   writeFileSync(
     keyPath,
-    JSON.stringify({ buyer, reviewer: reviewerKey, vendors: vendorKeys }, null, 2),
+    JSON.stringify(
+      { buyer, reviewer: reviewerKey, vendors: vendorKeys },
+      null,
+      2
+    )
   );
 }
 
@@ -57,7 +63,9 @@ const supabase = createClient(url, serviceKey, {
 
 const wiped = await supabase.rpc("wipe_demo_history");
 if (wiped.error) {
-  console.error("Could not wipe demo history. Apply the Supabase migration first.");
+  console.error(
+    "Could not wipe demo history. Apply the Supabase migration first."
+  );
   process.exit(1);
 }
 
@@ -121,7 +129,7 @@ const payments = plans.flatMap((plan) =>
     amount_usdc: 100_000_000,
     status: row.status,
     created_at: row.createdAt,
-  })),
+  }))
 );
 const paymentInsert = await supabase.from("payment_history").insert(payments);
 if (paymentInsert.error) {
@@ -129,16 +137,16 @@ if (paymentInsert.error) {
   process.exit(1);
 }
 
-console.log("Demo users: owner@leash.local, reviewer@leash.local, auditor@leash.local");
+console.log(
+  "Demo users: owner@leash.local, reviewer@leash.local, auditor@leash.local"
+);
 console.log("Their password is SEED_DEMO_PASSWORD in .env.");
 for (const plan of plans) {
-  const outcome = expectedGateOutcome(
-    vendorStats(plan.payments, false, nowMs),
-  );
+  const outcome = expectedGateOutcome(vendorStats(plan.payments, false, nowMs));
   console.log(`${plan.name}  ${vendorKeys[plan.key].publicKey}  ${outcome}`);
 }
 console.log(
-  "No screening rows or credentials were seeded. Solana sanctions coverage is not assumed.",
+  "No screening rows or credentials were seeded. Solana sanctions coverage is not assumed."
 );
 console.log(`Buyer ${buyer.publicKey}`);
 console.log(`Reviewer wallet ${reviewerKey.publicKey}`);

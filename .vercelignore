@@ -1,8 +1,14 @@
 node_modules
-anchor/target
-anchor/.anchor
+anchor
 .git
 server/data
 keys
 dist
 .npm-cache
+.env
+.env.*
+.agents
+.codex
+.aws
+supabase/.temp
+*.log

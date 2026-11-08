@@ -88,8 +88,8 @@ export function VaultCard() {
         sendSignedByWallet(
           (transaction) => signTransaction(transaction as never),
           [instruction],
-          walletAddress,
-        ),
+          walletAddress
+        )
       );
 
       setTxStatus(`Deposited! Signature: ${signature.slice(0, 20)}...`);
@@ -129,8 +129,8 @@ export function VaultCard() {
         sendSignedByWallet(
           (transaction) => signTransaction(transaction as never),
           [instruction],
-          walletAddress,
-        ),
+          walletAddress
+        )
       );
 
       setTxStatus(`Withdrawn! Signature: ${signature.slice(0, 20)}...`);
@@ -147,7 +147,8 @@ export function VaultCard() {
         <div className="space-y-1">
           <p className="text-lg font-semibold">SOL Vault</p>
           <p className="text-sm text-muted">
-            Connect Phantom to interact with the vault program. The demo owner key is separate and is not your wallet.
+            Connect Phantom to interact with the vault program. The demo owner
+            key is separate and is not your wallet.
           </p>
         </div>
         <div className="rounded-lg bg-cream/50 p-4 text-center text-sm text-muted">

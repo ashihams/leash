@@ -68,9 +68,9 @@ export function Landing() {
           </h1>
           <div className="k-hero-support">
             <p>
-              An owner gives an agent a 2 USDC leash to buy services. The
-              agent can ask for a payment. The owner's wallet stays with the
-              owner. The USDC sits in a treasury the program controls.
+              An owner gives an agent a 2 USDC leash to buy services. The agent
+              can ask for a payment. The owner's wallet stays with the owner.
+              The USDC sits in a treasury the program controls.
             </p>
             <div className="k-actions">
               <a className="k-action" href="#/dashboard">

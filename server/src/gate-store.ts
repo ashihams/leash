@@ -1,6 +1,12 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { CorridorRow, EvidenceInput, MandateRow, PaymentRow, VendorRow } from "./db.ts";
+import type {
+  CorridorRow,
+  EvidenceInput,
+  MandateRow,
+  PaymentRow,
+  VendorRow,
+} from "./db.ts";
 import {
   commitCorridorSpend,
   commitSpend,
@@ -28,22 +34,34 @@ export type GateStore = {
     blocked: boolean;
   }): Promise<void>;
   getVendor(wallet: string): Promise<VendorRow | undefined>;
-  insertMandate(mandate: Omit<MandateRow, "spent" | "uses" | "revoked">): Promise<void>;
+  insertMandate(
+    mandate: Omit<MandateRow, "spent" | "uses" | "revoked">
+  ): Promise<void>;
   getMandate(mandateId: number): Promise<MandateRow | undefined>;
   revokeMandate(mandateId: number): Promise<void>;
-  upsertCorridor(corridor: Omit<CorridorRow, "dailySpent" | "spentDay">): Promise<void>;
-  getCorridor(fromCountry: string, toCountry: string): Promise<CorridorRow | undefined>;
+  upsertCorridor(
+    corridor: Omit<CorridorRow, "dailySpent" | "spentDay">
+  ): Promise<void>;
+  getCorridor(
+    fromCountry: string,
+    toCountry: string
+  ): Promise<CorridorRow | undefined>;
   commitFund(payment: PaymentRow, day: number): Promise<void>;
   getPayment(paymentId: string): Promise<PaymentRow | undefined>;
   updatePayment(
     paymentId: string,
     patch: Partial<
-      Pick<PaymentRow, "state" | "receiptHash" | "verificationHash" | "acceptanceDeadline">
-    >,
+      Pick<
+        PaymentRow,
+        "state" | "receiptHash" | "verificationHash" | "acceptanceDeadline"
+      >
+    >
   ): Promise<void>;
   insertEvidence(evidence: EvidenceInput): Promise<number>;
   listEvidence(paymentId: string): Promise<ReturnType<typeof listEvidence>>;
-  listProviderChecks(paymentId: string): Promise<ReturnType<typeof listProviderChecks>>;
+  listProviderChecks(
+    paymentId: string
+  ): Promise<ReturnType<typeof listProviderChecks>>;
 };
 
 export function sqliteGateStore(db: DatabaseSync): GateStore {
@@ -82,7 +100,13 @@ export function sqliteGateStore(db: DatabaseSync): GateStore {
           throw new Error("BUDGET");
         }
         commitSpend(db, payment.mandateId, payment.amount);
-        commitCorridorSpend(db, payment.fromCountry, payment.toCountry, payment.amount, day);
+        commitCorridorSpend(
+          db,
+          payment.fromCountry,
+          payment.toCountry,
+          payment.amount,
+          day
+        );
         insertPayment(db, payment);
       });
     },
@@ -122,7 +146,7 @@ export function supabaseGateStore(client: SupabaseClient): GateStore {
           name: vendor.name,
           country: vendor.country,
           blocked: vendor.blocked ? 1 : 0,
-        }),
+        })
       );
     },
     async getVendor(wallet) {
@@ -158,7 +182,7 @@ export function supabaseGateStore(client: SupabaseClient): GateStore {
           category: mandate.category,
           revoked: 0,
           corridors: mandate.corridors,
-        }),
+        })
       );
     },
     async getMandate(mandateId) {
@@ -189,11 +213,17 @@ export function supabaseGateStore(client: SupabaseClient): GateStore {
     },
     async revokeMandate(mandateId) {
       must(
-        await client.from("gate_mandates").update({ revoked: 1 }).eq("mandate_id", mandateId),
+        await client
+          .from("gate_mandates")
+          .update({ revoked: 1 })
+          .eq("mandate_id", mandateId)
       );
     },
     async upsertCorridor(corridor) {
-      const existing = await this.getCorridor(corridor.fromCountry, corridor.toCountry);
+      const existing = await this.getCorridor(
+        corridor.fromCountry,
+        corridor.toCountry
+      );
       must(
         await client.from("gate_corridors").upsert({
           from_country: corridor.fromCountry,
@@ -204,7 +234,7 @@ export function supabaseGateStore(client: SupabaseClient): GateStore {
           daily_spent: existing?.dailySpent ?? 0,
           spent_day: existing?.spentDay ?? 0,
           packet_threshold: corridor.packetThreshold,
-        }),
+        })
       );
     },
     async getCorridor(fromCountry, toCountry) {
@@ -242,17 +272,23 @@ export function supabaseGateStore(client: SupabaseClient): GateStore {
         await client
           .from("gate_mandates")
           .update({ spent: fresh.spent + payment.amount, uses: fresh.uses + 1 })
-          .eq("mandate_id", payment.mandateId),
+          .eq("mandate_id", payment.mandateId)
       );
-      const corridor = await this.getCorridor(payment.fromCountry, payment.toCountry);
+      const corridor = await this.getCorridor(
+        payment.fromCountry,
+        payment.toCountry
+      );
       if (corridor) {
-        const spent = corridor.spentDay === day ? corridor.dailySpent + payment.amount : payment.amount;
+        const spent =
+          corridor.spentDay === day
+            ? corridor.dailySpent + payment.amount
+            : payment.amount;
         must(
           await client
             .from("gate_corridors")
             .update({ daily_spent: spent, spent_day: day })
             .eq("from_country", payment.fromCountry)
-            .eq("to_country", payment.toCountry),
+            .eq("to_country", payment.toCountry)
         );
       }
       must(
@@ -277,7 +313,7 @@ export function supabaseGateStore(client: SupabaseClient): GateStore {
           verification_hash: payment.verificationHash,
           delivery_deadline: payment.deliveryDeadline,
           acceptance_deadline: payment.acceptanceDeadline,
-        }),
+        })
       );
     },
     async getPayment(paymentId) {
@@ -320,14 +356,17 @@ export function supabaseGateStore(client: SupabaseClient): GateStore {
           .update({
             state: patch.state ?? current.state,
             receipt_hash:
-              patch.receiptHash === undefined ? current.receiptHash : patch.receiptHash,
+              patch.receiptHash === undefined
+                ? current.receiptHash
+                : patch.receiptHash,
             verification_hash:
               patch.verificationHash === undefined
                 ? current.verificationHash
                 : patch.verificationHash,
-            acceptance_deadline: patch.acceptanceDeadline ?? current.acceptanceDeadline,
+            acceptance_deadline:
+              patch.acceptanceDeadline ?? current.acceptanceDeadline,
           })
-          .eq("payment_id", paymentId),
+          .eq("payment_id", paymentId)
       );
     },
     async insertEvidence(evidence) {
@@ -378,8 +417,24 @@ export function supabaseGateStore(client: SupabaseClient): GateStore {
       }));
     },
     async listProviderChecks(paymentId) {
-      const rows = must(await client.from("gate_provider_checks").select("check_id,status,reason_code,evidence_hash,provider,environment,public_note").eq("payment_id", paymentId).order("created_at"));
-      return (rows ?? []).map((row) => ({ checkId: row.check_id, status: row.status, reasonCode: row.reason_code, evidenceHash: row.evidence_hash, provider: row.provider, environment: row.environment, publicNote: row.public_note }));
+      const rows = must(
+        await client
+          .from("gate_provider_checks")
+          .select(
+            "check_id,status,reason_code,evidence_hash,provider,environment,public_note"
+          )
+          .eq("payment_id", paymentId)
+          .order("created_at")
+      );
+      return (rows ?? []).map((row) => ({
+        checkId: row.check_id,
+        status: row.status,
+        reasonCode: row.reason_code,
+        evidenceHash: row.evidence_hash,
+        provider: row.provider,
+        environment: row.environment,
+        publicNote: row.public_note,
+      }));
     },
   };
 }

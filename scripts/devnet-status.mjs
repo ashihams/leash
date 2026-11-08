@@ -1,45 +1,125 @@
 import "dotenv/config";
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import bs58 from "bs58";
-import { address, createSolanaRpc, getAddressEncoder, getProgramDerivedAddress } from "@solana/kit";
+import { existsSync, readFileSync } from "node:fs";
+import {
+  address,
+  createSolanaRpc,
+  getAddressEncoder,
+  getProgramDerivedAddress,
+} from "@solana/kit";
+import { readChainSnapshot } from "../server/src/chain-readiness.ts";
+import {
+  DEVNET_RPC,
+  PROGRAM_ID,
+  PROGRAM_LOADER,
+} from "../src/leash/deployment.ts";
+import {
+  appendTransactionMessageInstructions,
+  compileTransaction,
+  createNoopSigner,
+  createTransactionMessage,
+  getBase64EncodedWireTransaction,
+  pipe,
+  setTransactionMessageFeePayerSigner,
+  setTransactionMessageLifetimeUsingBlockhash,
+} from "@solana/kit";
+import { createMandateInstruction } from "../src/leash/chain.ts";
+import { mandatePda } from "../src/leash/pda.ts";
 
-const program = address("8Eq2Ug3URR5ugzDfjYk4bbkBJa8o7U6YZtPp6vLDHezd");
-const loader = address("BPFLoaderUpgradeab1e11111111111111111111111");
-const rpc = createSolanaRpc("https://api.devnet.solana.com");
-const [config] = await getProgramDerivedAddress({ programAddress: program, seeds: [new TextEncoder().encode("config")] });
-const [corridor] = await getProgramDerivedAddress({ programAddress: program, seeds: [new TextEncoder().encode("corridor"), new Uint8Array([85, 83]), new Uint8Array([85, 83])] });
-const [programData] = await getProgramDerivedAddress({ programAddress: loader, seeds: [getAddressEncoder().encode(program)] });
-const genesis = await rpc.getGenesisHash().send();
-if (genesis !== "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG") throw new Error("RPC is not devnet");
-const { value: [executable, deployed, settings, route] } = await rpc.getMultipleAccounts([program, programData, config, corridor], { encoding: "base64", commitment: "confirmed" }).send();
-if (!executable?.executable || executable.owner !== loader) throw new Error("Program is not deployed");
-if (!deployed || deployed.owner !== loader) throw new Error("Invalid program data account");
-const elf = readFileSync("anchor/target/deploy/leash.so");
-const deployedBytes = Buffer.from(deployed.data[0], "base64");
-if (!deployedBytes.subarray(45, 45 + elf.length).equals(elf)) throw new Error("Deployed program differs from local binary");
-function checkedData(account, name, size) {
-  if (!account || account.owner !== program) throw new Error(`Invalid ${name} owner`);
-  const data = Buffer.from(account.data[0], "base64");
-  const discriminator = createHash("sha256").update(`account:${name}`).digest().subarray(0, 8);
-  if (data.length !== size || !data.subarray(0, 8).equals(discriminator)) throw new Error(`Invalid ${name} data`);
-  return data;
+const chain = await readChainSnapshot();
+const program = address(PROGRAM_ID);
+const loader = address(PROGRAM_LOADER);
+const rpc = createSolanaRpc(DEVNET_RPC);
+const [programData] = await getProgramDerivedAddress({
+  programAddress: loader,
+  seeds: [getAddressEncoder().encode(program)],
+});
+const { value: deployed } = await rpc
+  .getAccountInfo(programData, { encoding: "base64", commitment: "confirmed" })
+  .send({ abortSignal: AbortSignal.timeout(8000) });
+let binaryMatches = null;
+if (existsSync("anchor/target/deploy/leash.so") && deployed?.owner === loader) {
+  const elf = readFileSync("anchor/target/deploy/leash.so");
+  binaryMatches = Buffer.from(deployed.data[0], "base64")
+    .subarray(45, 45 + elf.length)
+    .equals(elf);
 }
-const data = checkedData(settings, "Config", 149);
-const corridorData = checkedData(route, "Corridor", 54);
-const mint = bs58.encode(data.subarray(104, 136));
-const status = {
-  cluster: "devnet", program, executable: true, binaryMatches: true,
-  config, corridor, corridorEnabled: corridorData[12] === 1,
-  admin: bs58.encode(data.subarray(8, 40)),
-  policySigner: bs58.encode(data.subarray(40, 72)),
-  verifier: bs58.encode(data.subarray(72, 104)), mint,
-  policyVersion: Number(data.readBigUInt64LE(136)), requiredChecks: data.readUInt32LE(144),
-  environmentMintMatches: process.env.LEASH_USDC_MINT === mint,
-};
+const gateUrl = process.env.LEASH_GATE_URL ?? "http://127.0.0.1:8787";
+let gate = { url: gateUrl, reachable: false, matches: false };
 try {
-  const health = await (await fetch("http://127.0.0.1:8787/health")).json();
-  status.gateMatches = health.mint === mint && health.policySigner === status.policySigner && health.verifier === status.verifier && health.policyVersion === status.policyVersion;
-} catch { status.gateMatches = false; }
+  const response = await fetch(`${gateUrl.replace(/\/$/, "")}/health`, {
+    signal: AbortSignal.timeout(8000),
+  });
+  const health = await response.json();
+  const mismatches = [
+    "mint",
+    "policySigner",
+    "verifier",
+    "policyVersion",
+  ].filter((key) => health[key] !== chain.config?.[key]);
+  gate = {
+    url: gateUrl,
+    reachable: response.ok,
+    matches: response.ok && mismatches.length === 0,
+    mismatches,
+  };
+} catch (error) {
+  gate.error = error.message;
+}
+const status = {
+  ...chain,
+  binaryMatches,
+  environmentMintMatches: Boolean(
+    chain.config && process.env.LEASH_USDC_MINT === chain.config.mint
+  ),
+  gate,
+};
+// Explicit opt-in to an unsigned simulation; this script never signs or sends.
+if (process.argv.includes("--simulate") && chain.config) {
+  const owner = address(chain.config.admin);
+  const mandateId = Date.now();
+  const instruction = await createMandateInstruction({
+    owner,
+    mandate: await mandatePda(owner, mandateId),
+    mandateId,
+    agent: chain.config.policySigner,
+    mint: chain.config.mint,
+    budget: 2_000_000,
+    perPayment: 1_000_000,
+    expiresAt: Math.floor(Date.now() / 1000) + 86400,
+  });
+  const { value: latest } = await rpc
+    .getLatestBlockhash({ commitment: "confirmed" })
+    .send();
+  const message = pipe(
+    createTransactionMessage({ version: 0 }),
+    (m) => setTransactionMessageFeePayerSigner(createNoopSigner(owner), m),
+    (m) => setTransactionMessageLifetimeUsingBlockhash(latest, m),
+    (m) => appendTransactionMessageInstructions([instruction], m)
+  );
+  const { value } = await rpc
+    .simulateTransaction(
+      getBase64EncodedWireTransaction(compileTransaction(message)),
+      {
+        encoding: "base64",
+        commitment: "confirmed",
+        sigVerify: false,
+      }
+    )
+    .send({ abortSignal: AbortSignal.timeout(8000) });
+  status.mandateSimulation = {
+    passed: value.err === null,
+    error: value.err,
+    logs: value.logs,
+  };
+  if (value.err) process.exitCode = 1;
+}
 console.log(JSON.stringify(status, null, 2));
-if (!status.corridorEnabled || !status.environmentMintMatches || !status.gateMatches) process.exitCode = 1;
+if (
+  !chain.programDeployed ||
+  !chain.config ||
+  binaryMatches === false ||
+  !status.environmentMintMatches ||
+  !gate.matches ||
+  chain.routes.some((route) => route.status !== "ready")
+)
+  process.exitCode = 1;

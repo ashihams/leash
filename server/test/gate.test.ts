@@ -127,8 +127,14 @@ test("a revoked mandate, a blocked vendor, and a failed check do not consume the
     country: "US",
     blocked: false,
   });
-  assert.equal((await blocked.fund({ paymentId: "33".repeat(32) })).json().decision, "allow");
-  assert.equal((await blocked.fund({ paymentId: "44".repeat(32) })).json().decision, "allow");
+  assert.equal(
+    (await blocked.fund({ paymentId: "33".repeat(32) })).json().decision,
+    "allow"
+  );
+  assert.equal(
+    (await blocked.fund({ paymentId: "44".repeat(32) })).json().decision,
+    "allow"
+  );
 
   const budget = await setup();
   const first = await budget.fund({ amount: 150_000_000 });

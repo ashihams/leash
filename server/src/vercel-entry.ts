@@ -6,9 +6,11 @@ import { assertProviderConfig } from "./providers/config.ts";
 import { DiditIdentity } from "./providers/identity.ts";
 import { OfacSdnProvider, createSupabaseOfacStore } from "./providers/ofac.ts";
 import { supabaseProviderStore } from "./providers/store.ts";
-import { SupabaseRepository } from "./lib/supabase-repository.ts";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+export { gateRequestUrl } from "./vercel-url.ts";
+import { agentConfig } from "./agent/config.ts";
+import { registerRuntimeAgent } from "./agent/runtime.ts";
 
 function keyFromEnv(name: string) {
   const secret = process.env[name];
@@ -22,6 +24,7 @@ let app: ReturnType<typeof buildApp> | undefined;
 
 export function gateApp() {
   if (app) return app;
+  const llm = agentConfig(process.env);
   const url = process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_KEY;
   const mint = process.env.LEASH_USDC_MINT;
@@ -34,7 +37,6 @@ export function gateApp() {
   const client = createClient(url, serviceKey, {
     auth: { persistSession: false },
   });
-  const repository = new SupabaseRepository(client);
   const ofac = new OfacSdnProvider();
   let refreshing: Promise<void> | undefined;
   const fresh = () =>
@@ -47,8 +49,9 @@ export function gateApp() {
       .finally(() => {
         refreshing = undefined;
       }));
+  const store = supabaseGateStore(client);
   app = buildApp({
-    store: supabaseGateStore(client),
+    store,
     providerRoutes: {
       store: supabaseProviderStore(client),
       sanctions: {
@@ -68,19 +71,13 @@ export function gateApp() {
       ),
       environment:
         process.env.DIDIT_ENVIRONMENT === "sandbox" ? "sandbox" : "live",
-      getDashboardUser: async (token) => {
-        const { data, error } = await client.auth.getUser(token);
-        return error || !data.user
-          ? null
-          : { id: data.user.id, email: data.user.email ?? "" };
-      },
-      getProfile: (id) => repository.getProfile(id),
     },
     policy,
     verifier: verifier.publicKey,
     mint,
     policyVersion: Number(process.env.LEASH_POLICY_VERSION ?? "1"),
   });
+  registerRuntimeAgent(app, { client, store, mint, config: llm });
   return app;
 }
 

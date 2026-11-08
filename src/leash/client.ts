@@ -6,9 +6,13 @@ import {
 import { intentMessage } from "../../server/src/intent.ts";
 import nacl from "tweetnacl";
 
-export const GATE = import.meta.env.VITE_GATE_URL ?? "/gate";
+const configuredGate = import.meta.env.VITE_GATE_URL;
+export const GATE =
+  configuredGate === "/gate" && !import.meta.env.DEV
+    ? "/api/gate"
+    : (configuredGate ?? (import.meta.env.DEV ? "/gate" : "/api/gate"));
 export const USDC_DECIMALS = 1_000_000;
-export const PROGRAM_ID = "8Eq2Ug3URR5ugzDfjYk4bbkBJa8o7U6YZtPp6vLDHezd";
+export { PROGRAM_ID } from "./deployment.ts";
 
 export type GateResult = {
   status: number;
@@ -17,14 +21,15 @@ export type GateResult = {
 
 export async function gate(
   path: string,
-  payload?: unknown
+  payload?: unknown,
+  accessToken?: string
 ): Promise<GateResult> {
   const response = await fetch(`${GATE}${path}`, {
     method: payload === undefined ? "GET" : "POST",
-    headers:
-      payload === undefined
-        ? undefined
-        : { "Content-Type": "application/json" },
+    headers: {
+      ...(payload === undefined ? {} : { "Content-Type": "application/json" }),
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
     body: payload === undefined ? undefined : JSON.stringify(payload),
   });
   const body = (await response.json()) as Record<string, unknown>;

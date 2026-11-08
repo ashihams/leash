@@ -19,7 +19,7 @@ export function walletKeyPair(seed: Uint8Array) {
 
 export function signWalletToken(
   secretKey: Uint8Array,
-  claims: WalletTokenClaims,
+  claims: WalletTokenClaims
 ): string {
   const payload = JSON.stringify(claims);
   const payloadBytes = textEncoder.encode(payload);
@@ -30,14 +30,15 @@ export function signWalletToken(
 export function readWalletToken(
   publicKey: Uint8Array,
   token: string,
-  nowSeconds: number,
+  nowSeconds: number
 ): WalletTokenClaims | null {
   const parts = token.split(".");
   if (parts.length !== 2) return null;
   const payloadBytes = decode(parts[0]);
   const signature = decode(parts[1]);
   if (!payloadBytes || !signature || signature.length !== 64) return null;
-  if (!nacl.sign.detached.verify(payloadBytes, signature, publicKey)) return null;
+  if (!nacl.sign.detached.verify(payloadBytes, signature, publicKey))
+    return null;
   let claims: WalletTokenClaims;
   try {
     claims = JSON.parse(textDecoder.decode(payloadBytes)) as WalletTokenClaims;

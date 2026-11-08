@@ -42,3 +42,6 @@ keys/
 # Vercel local link
 .vercel/
 api/generated/
+
+.vercel
+.env*

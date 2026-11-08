@@ -101,7 +101,11 @@ export type AuditRow = {
 export type HistoryRepository = {
   insertNonce(row: NonceRow): Promise<void>;
   findNonce(nonce: string): Promise<NonceRow | null>;
-  consumeNonce(nonce: string, wallet: string, nowSeconds: number): Promise<boolean>;
+  consumeNonce(
+    nonce: string,
+    wallet: string,
+    nowSeconds: number
+  ): Promise<boolean>;
   insertAudit(row: Omit<AuditRow, "id"> & { id?: string }): Promise<void>;
   getProfile(userId: string): Promise<Profile | null>;
   linkWallet(row: LinkedWallet): Promise<void>;
@@ -124,11 +128,11 @@ export type HistoryRepository = {
       reviewerWallet: string | null;
       reviewerSignature: string | null;
       decidedAt: string;
-    },
+    }
   ): Promise<"ok" | "missing" | "decided">;
   listAudit(paymentId: string): Promise<AuditRow[]>;
   listVendorPayments(
-    wallet: string,
+    wallet: string
   ): Promise<Array<{ status: HistoryStatus; createdAt: string }>>;
   isScreened(wallet: string): Promise<boolean>;
 };
@@ -163,21 +167,23 @@ export class MemoryDb implements HistoryRepository {
   async consumeNonce(
     nonce: string,
     wallet: string,
-    nowSeconds: number,
+    nowSeconds: number
   ): Promise<boolean> {
     const row = this.nonces.find(
       (item) =>
         item.nonce === nonce &&
         item.wallet === wallet &&
         !item.used &&
-        item.expiresAt > nowSeconds,
+        item.expiresAt > nowSeconds
     );
     if (!row) return false;
     row.used = true;
     return true;
   }
 
-  async insertAudit(row: Omit<AuditRow, "id"> & { id?: string }): Promise<void> {
+  async insertAudit(
+    row: Omit<AuditRow, "id"> & { id?: string }
+  ): Promise<void> {
     this.audits.push({ ...row, id: row.id ?? randomUUID() });
   }
 
@@ -191,25 +197,33 @@ export class MemoryDb implements HistoryRepository {
     this.wallets.push({ ...row });
   }
 
-  async findLinked(userId: string, wallet: string): Promise<LinkedWallet | null> {
+  async findLinked(
+    userId: string,
+    wallet: string
+  ): Promise<LinkedWallet | null> {
     return (
       this.wallets.find(
-        (row) => row.userId === userId && row.wallet === wallet,
+        (row) => row.userId === userId && row.wallet === wallet
       ) ?? null
     );
   }
 
   async upsertPayment(row: PaymentRow): Promise<void> {
     const index = this.payments.findIndex(
-      (item) => item.paymentId === row.paymentId,
+      (item) => item.paymentId === row.paymentId
     );
     if (index === -1) this.payments.push({ ...row });
-    else this.payments[index] = { ...this.payments[index], ...row, createdAt: this.payments[index].createdAt };
+    else
+      this.payments[index] = {
+        ...this.payments[index],
+        ...row,
+        createdAt: this.payments[index].createdAt,
+      };
   }
 
   async listPayments(): Promise<PaymentRow[]> {
     return [...this.payments].sort((a, b) =>
-      a.createdAt < b.createdAt ? 1 : -1,
+      a.createdAt < b.createdAt ? 1 : -1
     );
   }
 
@@ -219,7 +233,7 @@ export class MemoryDb implements HistoryRepository {
 
   async upsertClearance(row: ClearanceRow): Promise<void> {
     const index = this.clearances.findIndex(
-      (item) => item.paymentId === row.paymentId,
+      (item) => item.paymentId === row.paymentId
     );
     if (index === -1) this.clearances.push({ ...row });
     else this.clearances[index] = { ...row };
@@ -243,7 +257,7 @@ export class MemoryDb implements HistoryRepository {
 
   async listReviews(): Promise<ReviewRow[]> {
     return [...this.reviews].sort((a, b) =>
-      a.createdAt < b.createdAt ? 1 : -1,
+      a.createdAt < b.createdAt ? 1 : -1
     );
   }
 
@@ -259,7 +273,7 @@ export class MemoryDb implements HistoryRepository {
       reviewerWallet: string | null;
       reviewerSignature: string | null;
       decidedAt: string;
-    },
+    }
   ): Promise<"ok" | "missing" | "decided"> {
     const row = this.reviews.find((item) => item.paymentId === paymentId);
     if (!row) return "missing";
@@ -370,7 +384,7 @@ class RlsQuery {
   private read(): unknown[] {
     const scope = selectScope(this.db, this.actor, this.table);
     const rows = rowsFor(this.db, this.table).filter((row) =>
-      this.filters.every(([column, value]) => row[column] === value),
+      this.filters.every(([column, value]) => row[column] === value)
     );
     if (scope === "own") {
       return rows.filter((row) => row.id === userId(this.actor));
@@ -398,7 +412,7 @@ class RlsQuery {
   private writeUpdate(): unknown[] {
     assertWrite(this.actor, this.table, "update");
     const rows = rowsFor(this.db, this.table).filter((row) =>
-      this.filters.every(([column, value]) => row[column] === value),
+      this.filters.every(([column, value]) => row[column] === value)
     );
     const patch = this.values ?? {};
     if (this.table === "profiles" && this.actor.type === "user") {
@@ -425,7 +439,7 @@ class RlsQuery {
     assertWrite(this.actor, this.table, "delete");
     const all = rowsFor(this.db, this.table);
     const kept = all.filter(
-      (row) => !this.filters.every(([column, value]) => row[column] === value),
+      (row) => !this.filters.every(([column, value]) => row[column] === value)
     );
     const count = all.length - kept.length;
     replaceRows(this.db, this.table, kept);
@@ -441,7 +455,7 @@ function userId(actor: Actor): string {
 function selectScope(
   db: MemoryDb,
   actor: Actor,
-  table: TableName,
+  table: TableName
 ): "all" | "own" | "own-wallet" | "directory" {
   if (actor.type === "anon") throw new RlsError("RLS_DENIED");
   if (actor.type === "service" || actor.type === "database_owner") return "all";
@@ -475,7 +489,7 @@ function selectScope(
 function assertWrite(
   actor: Actor,
   table: TableName,
-  operation: "insert" | "update" | "delete",
+  operation: "insert" | "update" | "delete"
 ): void {
   if (table === "audit_log" && operation !== "insert") {
     if (actor.type !== "database_owner") {
@@ -497,7 +511,7 @@ function assertWrite(
 
 function rowsFor(
   db: MemoryDb,
-  table: TableName,
+  table: TableName
 ): Array<Record<string, unknown>> {
   switch (table) {
     case "profiles":
@@ -527,7 +541,7 @@ function rowsFor(
 function replaceRows(
   db: MemoryDb,
   table: TableName,
-  rows: Array<Record<string, unknown>>,
+  rows: Array<Record<string, unknown>>
 ): void {
   const target = rowsFor(db, table);
   target.splice(0, target.length, ...rows);

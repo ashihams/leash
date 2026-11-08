@@ -192,7 +192,7 @@ export function openDatabase(path: string): DatabaseSync {
   `);
   try {
     db.exec(
-      "ALTER TABLE provider_checks ADD COLUMN public_note TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE provider_checks ADD COLUMN public_note TEXT NOT NULL DEFAULT ''"
     );
   } catch {
     // The column is already present on databases created with this schema.
@@ -223,12 +223,12 @@ export type IdentityRow = {
 
 export function getIdentity(
   db: DatabaseSync,
-  vendorWallet: string,
+  vendorWallet: string
 ): IdentityRow | undefined {
   const row = db
     .prepare(
       `SELECT vendor_wallet, provider, session_id, status, expires_at, updated_at
-       FROM identity_verifications WHERE vendor_wallet = ?`,
+       FROM identity_verifications WHERE vendor_wallet = ?`
     )
     .get(vendorWallet) as
     | {
@@ -251,10 +251,7 @@ export function getIdentity(
   };
 }
 
-export function upsertIdentity(
-  db: DatabaseSync,
-  row: IdentityRow,
-): void {
+export function upsertIdentity(db: DatabaseSync, row: IdentityRow): void {
   db.prepare(
     `INSERT INTO identity_verifications
       (vendor_wallet, provider, session_id, status, expires_at, updated_at)
@@ -264,20 +261,20 @@ export function upsertIdentity(
       session_id = excluded.session_id,
       status = excluded.status,
       expires_at = excluded.expires_at,
-      updated_at = excluded.updated_at`,
+      updated_at = excluded.updated_at`
   ).run(
     row.vendorWallet,
     row.provider,
     row.sessionId,
     row.status,
     row.expiresAt,
-    row.updatedAt,
+    row.updatedAt
   );
 }
 
 export function insertWebhookEvent(
   db: DatabaseSync,
-  row: { id: string; provider: string; sessionId: string; receivedAt: string },
+  row: { id: string; provider: string; sessionId: string; receivedAt: string }
 ): boolean {
   const existing = db
     .prepare("SELECT id FROM webhook_events WHERE id = ?")
@@ -285,7 +282,7 @@ export function insertWebhookEvent(
   if (existing) return false;
   db.prepare(
     `INSERT INTO webhook_events (id, provider, session_id, received_at, verified)
-     VALUES (?, ?, ?, ?, 1)`,
+     VALUES (?, ?, ?, ?, 1)`
   ).run(row.id, row.provider, row.sessionId, row.receivedAt);
   return true;
 }
@@ -300,12 +297,12 @@ export function insertLocalAudit(
     paymentId: string | null;
     details: Record<string, unknown>;
     createdAt: string;
-  },
+  }
 ): void {
   db.prepare(
     `INSERT INTO audit_log
       (id, actor_type, actor_id, action, payment_id, details, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   ).run(
     row.id,
     row.actorType,
@@ -313,13 +310,13 @@ export function insertLocalAudit(
     row.action,
     row.paymentId,
     JSON.stringify(row.details),
-    row.createdAt,
+    row.createdAt
   );
 }
 
 export function listProviderChecks(
   db: DatabaseSync,
-  paymentId: string,
+  paymentId: string
 ): Array<{
   checkId: string;
   status: string;
@@ -332,7 +329,7 @@ export function listProviderChecks(
   const rows = db
     .prepare(
       `SELECT check_id, status, reason_code, evidence_hash, provider, environment, public_note
-       FROM provider_checks WHERE payment_id = ? ORDER BY created_at`,
+       FROM provider_checks WHERE payment_id = ? ORDER BY created_at`
     )
     .all(paymentId) as Array<{
     check_id: string;
@@ -368,12 +365,12 @@ export function insertProviderCheck(
     environment: string;
     publicNote?: string;
     createdAt: string;
-  },
+  }
 ): void {
   db.prepare(
     `INSERT INTO provider_checks
       (id, payment_id, wallet, check_id, status, reason_code, evidence_hash, provider, environment, public_note, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     row.id,
     row.paymentId,
@@ -385,7 +382,7 @@ export function insertProviderCheck(
     row.provider,
     row.environment,
     row.publicNote ?? "",
-    row.createdAt,
+    row.createdAt
   );
 }
 

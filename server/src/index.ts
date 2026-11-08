@@ -16,6 +16,11 @@ import { assertProviderConfig } from "./providers/config.ts";
 import { createSupabaseOfacStore, OfacSdnProvider } from "./providers/ofac.ts";
 import { DiditIdentity } from "./providers/identity.ts";
 import { supabaseProviderStore } from "./providers/store.ts";
+import { agentConfig } from "./agent/config.ts";
+import { registerRuntimeAgent } from "./agent/runtime.ts";
+import { sqliteGateStore } from "./gate-store.ts";
+
+const llm = agentConfig(process.env);
 
 const dataDir = fileURLToPath(new URL("../data/", import.meta.url));
 mkdirSync(dataDir, { recursive: true });
@@ -66,9 +71,8 @@ const app = buildApp({
     store: history ? supabaseProviderStore(history.supabase) : undefined,
     sanctions,
     identity,
-    environment: process.env.DIDIT_ENVIRONMENT === "sandbox" ? "sandbox" : "live",
-    getDashboardUser: history?.deps.getDashboardUser,
-    getProfile: history ? (userId) => history.db.getProfile(userId) : undefined,
+    environment:
+      process.env.DIDIT_ENVIRONMENT === "sandbox" ? "sandbox" : "live",
     enqueueReview: history
       ? async (entry) => {
           await history.db.insertReview({
@@ -109,6 +113,19 @@ if (history) {
   registerHistoryRoutes(app, history.deps);
   console.log("History backend is on. Solana remains the source of truth.");
 }
+const agentClient =
+  history?.supabase ??
+  createServiceClient(
+    process.env.SUPABASE_URL ?? "",
+    process.env.SUPABASE_SERVICE_KEY ?? ""
+  );
+registerRuntimeAgent(app, {
+  client: agentClient,
+  store: sqliteGateStore(db),
+  db,
+  mint,
+  config: llm,
+});
 const port = Number(process.env.PORT ?? "8787");
 const refreshOfac = () =>
   sanctions.ensureFresh({
@@ -116,9 +133,12 @@ const refreshOfac = () =>
     expectedSha256: process.env.OFAC_SDN_SHA256 ?? null,
   });
 await refreshOfac();
-setInterval(() => {
-  void refreshOfac();
-}, 24 * 60 * 60 * 1000);
+setInterval(
+  () => {
+    void refreshOfac();
+  },
+  24 * 60 * 60 * 1000
+);
 
 app.listen({ port, host: "127.0.0.1" }).then(() => {
   console.log(`Leash gate listening on http://127.0.0.1:${port}`);

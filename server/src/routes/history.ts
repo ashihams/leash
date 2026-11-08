@@ -20,15 +20,13 @@ import { requireProfile, requireRole } from "../middleware/dashboard.ts";
 
 const textEncoder = new TextEncoder();
 
-const pubkey = z
-  .string()
-  .refine((value) => {
-    try {
-      return bs58.decode(value).length === 32;
-    } catch {
-      return false;
-    }
-  }, "pubkey");
+const pubkey = z.string().refine((value) => {
+  try {
+    return bs58.decode(value).length === 32;
+  } catch {
+    return false;
+  }
+}, "pubkey");
 
 const paymentId = z.string().regex(/^[0-9a-f]{64}$/);
 const digits = z
@@ -96,7 +94,7 @@ const decisionBody = z.object({
 export type HistoryDeps = {
   db: HistoryRepository;
   getDashboardUser: (
-    token: string,
+    token: string
   ) => Promise<{ id: string; email: string } | null>;
   internalSecret: string;
   tokenSecretKey: Uint8Array;
@@ -107,7 +105,7 @@ export type HistoryDeps = {
 
 export function registerHistoryRoutes(
   app: FastifyInstance,
-  deps: HistoryDeps,
+  deps: HistoryDeps
 ): void {
   const now = () => deps.now?.() ?? Math.floor(Date.now() / 1000);
   const reviewTimeout = deps.reviewTimeoutSeconds ?? REVIEW_TIMEOUT_SECONDS;
@@ -116,8 +114,8 @@ export function registerHistoryRoutes(
     (
       handler: (
         request: FastifyRequest,
-        reply: FastifyReply,
-      ) => Promise<unknown>,
+        reply: FastifyReply
+      ) => Promise<unknown>
     ) =>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
@@ -148,10 +146,8 @@ export function registerHistoryRoutes(
   }
 
   async function profile(request: FastifyRequest): Promise<Profile> {
-    return requireProfile(
-      request,
-      deps.getDashboardUser,
-      (userId) => deps.db.getProfile(userId),
+    return requireProfile(request, deps.getDashboardUser, (userId) =>
+      deps.db.getProfile(userId)
     );
   }
 
@@ -198,7 +194,7 @@ export function registerHistoryRoutes(
         details: { purpose: body.purpose, result: "ok" },
       });
       return { nonce, message, issuedAt, expiresAt };
-    }),
+    })
   );
 
   app.post(
@@ -285,8 +281,13 @@ export function registerHistoryRoutes(
         action: "auth.verify",
         details: { purpose, result: "ok" },
       });
-      return { token, wallet: row.wallet, purpose, expiresAt: issuedAt + WALLET_TOKEN_TTL_SECONDS };
-    }),
+      return {
+        token,
+        wallet: row.wallet,
+        purpose,
+        expiresAt: issuedAt + WALLET_TOKEN_TTL_SECONDS,
+      };
+    })
   );
 
   app.post(
@@ -297,7 +298,7 @@ export function registerHistoryRoutes(
       const claims = readWalletToken(
         deps.tokenPublicKey,
         body.walletToken,
-        now(),
+        now()
       );
       if (!claims || claims.purpose !== "link_wallet") {
         await audit({
@@ -339,7 +340,7 @@ export function registerHistoryRoutes(
         details: { result: "ok", kind: body.kind },
       });
       return { ok: true, wallet: claims.wallet, kind: body.kind };
-    }),
+    })
   );
 
   app.get(
@@ -348,7 +349,7 @@ export function registerHistoryRoutes(
       const user = await profile(request);
       requireRole(user, ["owner", "reviewer", "auditor"]);
       return { payments: await deps.db.listPayments() };
-    }),
+    })
   );
 
   app.get(
@@ -367,7 +368,7 @@ export function registerHistoryRoutes(
         deps.db.listAudit(params.data.id),
       ]);
       return { payment, clearance, checks, review, audit: entries };
-    }),
+    })
   );
 
   app.post(
@@ -394,7 +395,7 @@ export function registerHistoryRoutes(
         saved.push(record.id);
       }
       return { ok: true, ids: saved };
-    }),
+    })
   );
 
   app.post(
@@ -423,7 +424,7 @@ export function registerHistoryRoutes(
         createdAt,
       });
       return { ok: true };
-    }),
+    })
   );
 
   app.post(
@@ -442,7 +443,7 @@ export function registerHistoryRoutes(
         decidedAt: null,
       });
       return { ok: true };
-    }),
+    })
   );
 
   app.get(
@@ -452,7 +453,7 @@ export function registerHistoryRoutes(
       requireRole(user, ["reviewer"]);
       await expireReviews(deps.db, now(), reviewTimeout);
       return { reviews: await deps.db.listReviews() };
-    }),
+    })
   );
 
   app.post(
@@ -460,9 +461,7 @@ export function registerHistoryRoutes(
     guard(async (request) => {
       const user = await profile(request);
       requireRole(user, ["reviewer"]);
-      const params = z
-        .object({ paymentId })
-        .safeParse(request.params);
+      const params = z.object({ paymentId }).safeParse(request.params);
       if (!params.success) throw new ApiError(400, "VALIDATION");
       await expireReviews(deps.db, now(), reviewTimeout);
       const review = await deps.db.getReview(params.data.paymentId);
@@ -518,7 +517,11 @@ export function registerHistoryRoutes(
         });
         throw new ApiError(401, "SIGNATURE_INVALID");
       }
-      const consumed = await deps.db.consumeNonce(body.nonce, body.wallet, now());
+      const consumed = await deps.db.consumeNonce(
+        body.nonce,
+        body.wallet,
+        now()
+      );
       if (!consumed) throw new ApiError(401, "NONCE_USED");
       const settled = await deps.db.decideReview(params.data.paymentId, {
         status: body.status,
@@ -538,7 +541,7 @@ export function registerHistoryRoutes(
         details: { result: body.status },
       });
       return { ok: true, status: body.status };
-    }),
+    })
   );
 
   app.get(
@@ -562,14 +565,14 @@ export function registerHistoryRoutes(
         disputeRatio: stats.disputeRatio,
         outcome: expectedGateOutcome(stats),
       };
-    }),
+    })
   );
 }
 
 async function expireReviews(
   db: HistoryRepository,
   nowSeconds: number,
-  timeoutSeconds: number,
+  timeoutSeconds: number
 ) {
   const reviews = await db.listReviews();
   for (const review of reviews) {
@@ -589,7 +592,7 @@ async function expireReviews(
 function verifySignature(
   wallet: string,
   message: string,
-  signature: string,
+  signature: string
 ): boolean {
   try {
     const sig = bs58.decode(signature);
@@ -598,7 +601,7 @@ function verifySignature(
     return nacl.sign.detached.verify(
       textEncoder.encode(message),
       sig,
-      publicKey,
+      publicKey
     );
   } catch {
     return false;
