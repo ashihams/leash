@@ -54,6 +54,7 @@
     "@supabase/supabase-js": "^2.119.0",
     "@tailwindcss/vite": "^4",
     "bs58": "^6.0.0",
+    "cookie": "0.7.2",
     "dotenv": "^18.0.9",
     "fastify": "^5.12.8",
     "react": "^19.2.0",
@@ -62,6 +63,9 @@
     "tailwindcss": "^4",
     "tweetnacl": "^1.0.3",
     "zod": "^4.6.7"
+  },
+  "overrides": {
+    "cookie": "0.7.2"
   },
   "devDependencies": {
     "@codama/nodes-from-anchor": "1.5.3",

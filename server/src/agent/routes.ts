@@ -139,7 +139,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps) 
         try { await deps.repository.finish(id, steps, { error: failure.code }); } catch { return reply.code(503).send({ error: "AGENT_STORAGE_UNAVAILABLE" }); }
       }
       if (failure.status === 429) reply.header("Retry-After", "60");
-      return reply.code(failure.status).send({ error: failure.code, steps });
+      return reply.code(failure.status).send({ error: failure.code, steps, message: error instanceof Error ? error.message : String(error) });
     }
   });
 }

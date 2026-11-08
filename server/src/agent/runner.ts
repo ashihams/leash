@@ -102,10 +102,28 @@ export async function runAgent(input: { goal: string; simulate: boolean; provide
   }
   if (!last) throw new AgentError("AGENT_STEP_LIMIT", 422);
   const checked = last as { proposal: Proposal; result: ProposalResult };
-  messages.push({ role: "system", content: "The tool loop has stopped. Return the final JSON using only observed facts, with goal_summary, chosen_vendor, amount, reasons, alternatives_considered (one sentence per top choice), gate_result, explanation and requires_confirmation=true. Use the LAST proposed vendor and amount. Do not invent reason codes. No further tools are available." });
-  const reply = await input.provider.complete(messages, { response_format: { type: "json_schema", json_schema: { name: "payment_proposal", strict: true, schema: z.toJSONSchema(agentFinalSchema, { target: "draft-7" }) } } });
+  messages.push({ role: "system", content: "The tool loop has stopped. Return the final JSON using only observed facts, with goal_summary { summary: string, budget: number, category: number (must be numeric), constraints: string[] }, chosen_vendor, amount, reasons: string[], alternatives_considered: [], gate_result, explanation: string and requires_confirmation=true. Use the LAST proposed vendor and amount. Do not invent reason codes. No further tools are available." });
+  const reply = await input.provider.complete(messages, {
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "payment_proposal",
+        strict: true,
+        schema: z.toJSONSchema(agentFinalSchema, { target: "draft-7" }),
+      },
+    },
+  });
   let decoded: unknown;
   try { decoded = JSON.parse(reply.content ?? ""); } catch { throw new AgentError("LLM_INVALID_JSON"); }
+  if (decoded && typeof decoded === "object" && "goal_summary" in decoded) {
+    const gso = (decoded as Record<string, unknown>).goal_summary as Record<string, unknown> | undefined;
+    if (gso && typeof gso.category !== "number") {
+      gso.category = Number(gso.category) || 7;
+    }
+    if (gso && !Array.isArray(gso.constraints)) {
+      gso.constraints = [];
+    }
+  }
   const parsed = agentFinalSchema.safeParse(decoded);
   if (!parsed.success || parsed.data.chosen_vendor !== checked.proposal.vendor || parsed.data.amount !== checked.proposal.amount) throw new AgentError("LLM_INVALID_OUTPUT");
   const final = parsed.data;
