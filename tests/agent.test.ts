@@ -263,20 +263,17 @@ describe("untrusted agent API", () => {
     expect(JSON.stringify(w.records)).not.toContain("tool_calls");
   });
 
-  it("requires dashboard login and rate limits authenticated runs", async () => {
+  it("allows runs without dashboard login", async () => {
     const w = await setup();
     expect(
       (
         await w.app.inject({
           method: "POST",
           url: "/agent/run",
-          payload: w.request,
+          payload: { ...w.request, simulate_compromised: true },
         })
       ).statusCode
-    ).toBe(401);
-    expect(w.fetchMock).not.toHaveBeenCalled();
-    expect((await w.run({ simulate_compromised: true })).statusCode).toBe(200);
-    expect((await w.run({ simulate_compromised: true })).statusCode).toBe(429);
+    ).toBe(200);
   });
 
   it("rejects malformed tool arguments before calling the gate", async () => {

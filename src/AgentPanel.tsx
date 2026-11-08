@@ -82,11 +82,6 @@ export function AgentPanel({ goal, busy, runAgent, approve }: Props) {
       >
         {running ? "Working…" : "Run agent"}
       </button>
-      <p className="d-hint">
-        Dashboard login required. One run per minute. The existing gate reserves
-        mandate budget when it approves a clearance; the agent itself sends no
-        funds.
-      </p>
       {notice ? <p role="status">{notice}</p> : null}
       {steps.length ? (
         <ol className="d-agent-trace" aria-label="Agent trace">

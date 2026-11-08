@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useWalletConnection } from "@solana/react-hooks";
 import nacl from "tweetnacl";
-import { AccountAccess } from "./AccountAccess";
 import { AgentPanel } from "./AgentPanel";
 import { supabase } from "./lib/supabase";
 import {
@@ -728,12 +727,8 @@ export function Dashboard() {
     actionLock.current = true;
     setBusy(true);
     try {
-      const auth = supabase ? await supabase.auth.getSession() : null;
-      const token = auth?.data.session?.access_token;
-      if (!token)
-        throw new Error(
-          "Sign in to your dashboard account before running the agent."
-        );
+      const token = (await supabase?.auth.getSession())?.data.session
+        ?.access_token;
       const ready = await ensureMandate(session.current.mandateId, false);
       if (!ready)
         throw new Error(
@@ -1588,7 +1583,6 @@ export function Dashboard() {
                 </p>
               ) : null}
             </section>
-            <AccountAccess />
           </div>
         ) : null}
       </header>
