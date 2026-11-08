@@ -286,7 +286,8 @@
 }
 
 .d-form input,
-.d-form textarea {
+.d-form textarea,
+.d-form select {
   width: 100%;
   box-sizing: border-box;
   min-height: 44px;
@@ -299,6 +300,21 @@
   font-size: 15px;
   letter-spacing: 0;
   text-transform: none;
+}
+
+.d-form select {
+  color-scheme: dark;
+  font-family: inherit;
+}
+
+.d-form select option {
+  background: var(--d-surface);
+  color: var(--d-text);
+}
+
+.d-form select:focus-visible {
+  outline: 2px solid var(--d-accent);
+  outline-offset: 2px;
 }
 
 .d-form textarea {
