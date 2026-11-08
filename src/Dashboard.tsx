@@ -699,8 +699,8 @@ export function Dashboard() {
         push(
           "Mandate registered",
           skipped.length > 0
-            ? `${skippedLabel(skipped)} Mandate ${id} is registered in the gate for ${who}. On-chain setup is still required. Budget ${BUDGET}.00 USDC.`
-            : `Mandate ${id} is registered in the gate for ${who}. On-chain setup is still required. Budget ${BUDGET}.00 USDC.`
+            ? `${skippedLabel(skipped)} Mandate ${id} is registered in the gate for ${who}. Solana devnet is connected. Click "Open a mandate" or "Run agent" to initialize on-chain (Budget ${BUDGET}.00 USDC).`
+            : `Mandate ${id} is registered in the gate for ${who}. Solana devnet is connected. Click "Open a mandate" or "Run agent" to initialize on-chain (Budget ${BUDGET}.00 USDC).`
         );
         return { id, account: mandate, owner: ownerAddress, mint: activeMint };
       }
