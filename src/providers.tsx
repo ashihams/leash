@@ -1,130 +1,91 @@
-import { createSolanaClient } from "@metamask/connect-solana";
-import {
-  createClient,
-  createWalletStandardConnector,
-  watchWalletStandardConnectors,
-  type WalletConnector,
-} from "@solana/client";
+import { watchWalletStandardConnectors, createClient, type WalletConnector } from "@solana/client";
 import { SolanaProvider } from "@solana/react-hooks";
-import { PropsWithChildren, useEffect, useState } from "react";
+import { PropsWithChildren, useEffect, useState, useSyncExternalStore } from "react";
+import { DEVNET_CHAIN, isPhantomName } from "./leash/wallet";
 
 const ENDPOINT = "https://api.devnet.solana.com";
 
-let metamaskConnectorPromise: Promise<WalletConnector | null> | undefined;
-let republish: (() => void) | null = null;
+type PhantomWallet = {
+  accounts: readonly { chains: readonly string[] }[];
+  features?: {
+    "standard:events"?: {
+      on: (event: "change", listener: () => void) => void;
+    };
+  };
+};
 
-function isMetaMask(connector: WalletConnector) {
-  return (
-    connector.id === "wallet-standard:metamask" ||
-    connector.name.toLowerCase().includes("metamask")
-  );
+const watched = new WeakSet<object>();
+let phantomWallet: PhantomWallet | null = null;
+let phantomChains: string[] = [];
+const listeners = new Set<() => void>();
+
+function publishChains(chains: readonly string[]) {
+  phantomChains = [...chains];
+  listeners.forEach((listener) => listener());
 }
 
-function loadMetaMaskConnector(): Promise<WalletConnector | null> {
-  if (!metamaskConnectorPromise) {
-    metamaskConnectorPromise = createSolanaClient({
-      dapp: {
-        name: "Leash",
-        url: window.location.origin,
-      },
-      api: {
-        supportedNetworks: {
-          devnet: ENDPOINT,
-          mainnet: "https://api.mainnet-beta.solana.com",
-        },
-      },
-      analytics: { enabled: false },
-    })
-      .then((metamask) =>
-        createWalletStandardConnector(metamask.getWallet(), {
-          defaultChain: "solana:devnet",
-          id: "wallet-standard:metamask",
-          name: "MetaMask",
-        }),
-      )
-      .catch((error: unknown) => {
-        console.error(error);
-        metamaskConnectorPromise = undefined;
-        return null;
-      });
+export function refreshPhantomChains() {
+  if (phantomWallet) rememberPhantom(phantomWallet);
+}
+
+function rememberPhantom(wallet: PhantomWallet) {
+  phantomWallet = wallet;
+  const account = wallet.accounts.find((item) => item.chains.includes(DEVNET_CHAIN)) ?? wallet.accounts[0];
+  publishChains(account?.chains ?? []);
+  const events = wallet.features?.["standard:events"];
+  if (events && !watched.has(wallet)) {
+    watched.add(wallet);
+    events.on("change", () => rememberPhantom(wallet));
   }
-  return metamaskConnectorPromise;
 }
 
-function connectorList(
-  sdk: WalletConnector | null,
-  discovered: readonly WalletConnector[],
-) {
-  const extension = discovered.find(isMetaMask) ?? null;
-  const rest = discovered.filter((connector) => !isMetaMask(connector));
-  const metamask = extension ?? sdk;
-  return metamask ? [metamask, ...rest] : [...rest];
+export function phantomChainsSnapshot() {
+  return phantomChains;
 }
 
-export function refreshMetaMask() {
-  metamaskConnectorPromise = undefined;
-  republish?.();
+export function usePhantomChains() {
+  return useSyncExternalStore(
+    (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    phantomChainsSnapshot,
+    () => [],
+  );
 }
 
 export function Providers({ children }: PropsWithChildren) {
-  const [client, setClient] = useState<ReturnType<typeof createClient> | null>(
-    null,
+  const [client, setClient] = useState(() =>
+    createClient({ endpoint: ENDPOINT, walletConnectors: [] }),
   );
 
   useEffect(() => {
-    try {
-      window.localStorage.removeItem("solana:last-connector");
-    } catch {
-      // Connection still works if the browser blocks storage.
-    }
-
-    let discovered: readonly WalletConnector[] = [];
-    let sdk: WalletConnector | null = null;
     let stopped = false;
-    let sawMetaMask = false;
-    let sdkRequest = 0;
-
-    const publish = () => {
-      if (stopped) return;
-      const connectors = connectorList(sdk, discovered);
-      const hasMetaMask = connectors.some(isMetaMask);
-      setClient((current) => {
-        if (current && sawMetaMask) return current;
-        if (current && !hasMetaMask) return current;
-        if (hasMetaMask) sawMetaMask = true;
-        current?.destroy();
-        return createClient({
-          endpoint: ENDPOINT,
-          walletConnectors: connectors,
+    const stop = watchWalletStandardConnectors(
+      (found) => {
+        if (stopped) return;
+        const phantomOnly = found.filter((connector: WalletConnector) => isPhantomName(connector.name));
+        setClient((current) => {
+          current?.destroy();
+          return createClient({
+            endpoint: ENDPOINT,
+            walletConnectors: phantomOnly,
+          });
         });
-      });
-    };
-
-    const stop = watchWalletStandardConnectors((next) => {
-      discovered = next;
-      publish();
-    });
-
-    const finishSdk = () => {
-      const request = ++sdkRequest;
-      loadMetaMaskConnector().then((connector) => {
-        if (stopped || request !== sdkRequest) return;
-        sdk = connector;
-        publish();
-      });
-    };
-
-    republish = finishSdk;
-    finishSdk();
-
+      },
+      {
+        overrides: (wallet) => {
+          if (!isPhantomName(wallet.name)) return undefined;
+          rememberPhantom(wallet as PhantomWallet);
+          return { defaultChain: DEVNET_CHAIN, id: "wallet-standard:phantom" };
+        },
+      },
+    );
     return () => {
       stopped = true;
-      if (republish === finishSdk) republish = null;
       stop();
     };
   }, []);
-
-  if (!client) return null;
 
   return (
     <SolanaProvider client={client} walletPersistence={false}>

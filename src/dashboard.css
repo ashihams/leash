@@ -234,6 +234,12 @@
   margin-top: 8px;
 }
 
+.d-explorer {
+  color: var(--d-accent);
+  font-size: 14px;
+  margin-right: 8px;
+}
+
 .d-card p,
 .d-note,
 .d-hint,

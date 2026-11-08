@@ -433,7 +433,44 @@ export function buildApp(options: GateOptions): FastifyInstance {
     };
   });
 
+  if (!process.env.VERCEL) {
+    app.post("/chain/deploy", async () => {
+      const { startProgramDeploy } = await import("./devnet.ts");
+      return { status: startProgramDeploy() };
+    });
+  }
+
+  app.post("/chain/mint", async (request) => {
+    const body = request.body as { owner?: string };
+    if (!body?.owner) throw new HttpError(400, "BAD_REQUEST");
+    try {
+      const { mintTestUsdc } = await import("./devnet.ts");
+      return { signature: await mintTestUsdc(body.owner) };
+    } catch (error) {
+      throw chainFailure(error);
+    }
+  });
+
+  app.post("/chain/verify", async (request) => {
+    const body = request.body as { paymentId?: string; artifact?: string };
+    if (!body?.paymentId || !body.artifact) throw new HttpError(400, "BAD_REQUEST");
+    try {
+      const { submitVerify } = await import("./devnet.ts");
+      return {
+        signature: await submitVerify(body.paymentId, Buffer.from(body.artifact, "base64")),
+      };
+    } catch (error) {
+      throw chainFailure(error);
+    }
+  });
+
   return app;
+}
+
+function chainFailure(error: unknown) {
+  const message = error instanceof Error ? error.message.split("\n")[0] : "CHAIN_NOT_READY";
+  if (message === "CHAIN_NOT_READY") return new HttpError(503, "CHAIN_NOT_READY");
+  return new HttpError(500, message.replace(/[^\w .:_-]/g, "").slice(0, 160) || "CHAIN_FAILED");
 }
 
 async function sign(

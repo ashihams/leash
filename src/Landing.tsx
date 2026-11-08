@@ -31,7 +31,7 @@ const rows = [
   {
     index: "01",
     title: "Mandate",
-    copy: "The owner names the agent, a 200 USDC budget, a per-payment cap, a category, and the corridors. Revoke blocks the next funding. It does not cancel an escrow that is already funded.",
+    copy: "The owner names the agent, a 2 USDC budget, a per-payment cap, a category, and the corridors. Revoke blocks the next funding. It does not cancel an escrow that is already funded.",
   },
   {
     index: "02",
@@ -68,7 +68,7 @@ export function Landing() {
           </h1>
           <div className="k-hero-support">
             <p>
-              An owner gives an agent a 200 USDC leash to buy services. The
+              An owner gives an agent a 2 USDC leash to buy services. The
               agent can ask for a payment. The owner's wallet stays with the
               owner. The USDC sits in a treasury the program controls.
             </p>

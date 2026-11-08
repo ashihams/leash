@@ -13,11 +13,29 @@ npm install   # Builds program and generates client automatically
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173), connect your wallet, and interact with the vault on devnet.
+Open [http://localhost:5173](http://localhost:5173), connect Phantom, and interact with the vault on devnet.
+
+## Phantom
+
+The dashboard connects only to a wallet whose name is `Phantom`, through the Wallet Standard support already in `@solana/client`. Owner transactions are signed with `solana:signTransaction` and then submitted by this app to `https://api.devnet.solana.com`. The wallet is not asked to send the transaction, so Phantom's selected network cannot move it to mainnet.
+
+On startup the app calls `getGenesisHash` and continues only when the result is Solana devnet's genesis hash, `EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG`.
+
+Pages used:
+
+- [Phantom Wallet Standard](https://docs.phantom.com/developer-powertools/wallet-standard)
+- [Phantom testnet mode](https://docs.phantom.com/developer-powertools/testnet-mode) (Settings, Developer Settings, Testnet Mode)
+- [Sign a message](https://docs.phantom.com/solana/signing-a-message)
+- [Detect the provider](https://docs.phantom.com/solana/detecting-the-provider) (install link `https://phantom.com/`)
+- [Send a Solana transaction](https://docs.phantom.com/recipes/transactions/send-solana-v1-transaction) (sign, then the app submits; Leash stays on version 0)
+- [Wallet Standard Solana features](https://github.com/wallet-standard/wallet-standard/blob/master/extensions/solana.md)
+- [Solana `getGenesisHash`](https://solana.com/docs/rpc/http/getgenesishash)
+- [Solana devnet genesis hash](https://github.com/solana-labs/solana/blob/master/sdk/src/genesis_config.rs) (`ClusterType::Devnet`)
+- [Solana clusters](https://solana.com/docs/references/clusters) (`https://api.devnet.solana.com`)
 
 ## What's Included
 
-- **Wallet connection** via `@solana/react-hooks` with auto-discovery
+- **Wallet connection** via `@solana/react-hooks`, limited to Phantom on devnet
 - **SOL Vault program** - deposit and withdraw SOL from a personal PDA vault
 - **Codama-generated client** - type-safe program interactions using `@solana/kit`
 - **Tailwind CSS v4** with light/dark mode
