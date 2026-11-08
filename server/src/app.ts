@@ -26,6 +26,8 @@ import {
 import { sqliteGateStore, type GateStore } from "./gate-store.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { PaymentRow } from "./db.ts";
+import { registerFxRoutes } from "./fx.ts";
+import { CROSS_BORDER_ROUTES } from "../../src/leash/corridors.ts";
 import { runProviderGate, type ProviderGateResult } from "./providers/gate.ts";
 import {
   registerProviderRoutes,
@@ -71,8 +73,16 @@ export type GateOptions = {
 export function buildApp(options: GateOptions): FastifyInstance {
   const store = options.store ?? sqliteGateStore(options.db as DatabaseSync);
   const app = Fastify({ logger: false });
+  registerFxRoutes(app);
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const ttl = options.clearanceTtlSeconds ?? 120;
+  app.addHook("onReady", async () => {
+    for (const { fromCountry, toCountry } of CROSS_BORDER_ROUTES) {
+      if (!(await store.getCorridor(fromCountry, toCountry))) {
+        await store.upsertCorridor({ fromCountry, toCountry, enabled: 1, perPaymentCap: 1_000_000, dailyCap: 10_000_000_000, packetThreshold: 0 });
+      }
+    }
+  });
   const configuredMint = encodeBase58(readPubkey(options.mint, "MINT"));
 
   app.setErrorHandler((error, _request, reply) => {

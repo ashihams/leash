@@ -3,6 +3,7 @@ import { useWalletConnection } from "@solana/react-hooks";
 import nacl from "tweetnacl";
 import { AccountAccess } from "./AccountAccess";
 import { supabase } from "./lib/supabase";
+import { CROSS_BORDER_ROUTES, formatLocalAmount, type FxQuote, type PaymentRoute } from "./leash/corridors";
 import "./dashboard.css";
 import { refreshPhantomChains, usePhantomChains } from "./providers";
 import {
@@ -39,6 +40,7 @@ import {
   accountExists,
   createAtaInstruction,
   createMandateInstruction,
+  corridorPda,
   depositInstruction,
   ed25519InstructionData,
   deployRentPaid,
@@ -112,6 +114,11 @@ export function Dashboard() {
   const [vendorName, setVendorName] = useState(vendors[0].name);
   const [verificationLink, setVerificationLink] = useState<{ wallet: string; url: string } | null>(null);
   const [amount, setAmount] = useState(String(PAYMENT));
+  const [routeId, setRouteId] = useState<string>(CROSS_BORDER_ROUTES[0].id);
+  const route = CROSS_BORDER_ROUTES.find((item) => item.id === routeId) ?? CROSS_BORDER_ROUTES[0];
+  const [fxQuote, setFxQuote] = useState<FxQuote | null>(null);
+  const [fxError, setFxError] = useState("");
+  const [fxRefresh, setFxRefresh] = useState(0);
   const [goal, setGoal] = useState("Buy a logo from a studio for 1 USDC.");
   const [busy, setBusy] = useState(false);
   const [walletNote, setWalletNote] = useState("");
@@ -125,9 +132,10 @@ export function Dashboard() {
     mandateId: 7,
     mandateAccount: "",
     mandateOwner: "",
+    mandateRoutes: "",
     mint: "",
     verifier: "",
-    corridorSet: false,
+    corridorSet: "",
   });
   const [log, setLog] = useState<LogLine[]>([]);
   const [lastPayment, setLastPayment] = useState("");
@@ -135,6 +143,7 @@ export function Dashboard() {
     invoiceHash: string;
     amount: number;
     vendor: string;
+    route: PaymentRoute;
   } | null>(null);
   const [lastClearance, setLastClearance] = useState<{
     message: string;
@@ -146,6 +155,29 @@ export function Dashboard() {
   const ownerAddress = connected ?? pubkey(demoOwner.publicKey);
   const agentAddress = pubkey(agent.publicKey);
   const vendor = vendors.find((item) => item.name === vendorName) ?? vendors[0];
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      let nextRefresh = 60_000;
+      setFxQuote(null);
+      setFxError("");
+      try {
+        const response = await gate(`/fx/quote?currency=${route.currency}`);
+        if (cancelled) return;
+        const quote = response.body as unknown as FxQuote;
+        if (response.status !== 200 || quote.currency !== route.currency || quote.base !== "USDC" || !Number.isFinite(quote.rate) || quote.rate <= 0 || !Number.isFinite(Date.parse(quote.expiresAt)) || Date.parse(quote.expiresAt) <= Date.now()) throw new Error("Market rate unavailable. Try again.");
+        setFxQuote(quote);
+        nextRefresh = Math.max(1000, Math.min(60_000, Date.parse(quote.expiresAt) - Date.now()));
+      } catch {
+        if (!cancelled) setFxError("Market rate unavailable. Try again.");
+      } finally {
+        if (!cancelled) timer = setTimeout(refresh, nextRefresh);
+      }
+    };
+    void refresh();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [route.currency, fxRefresh]);
   const chains = usePhantomChains();
   const [genesisOk, setGenesisOk] = useState<boolean | null>(null);
   const [programOnDevnet, setProgramOnDevnet] = useState<boolean | null>(null);
@@ -271,6 +303,7 @@ export function Dashboard() {
     return recordTx(title, "Submitted create_and_fund on devnet.", async () => {
       await sponsor(agentAddress);
       const instructions = await fundInstructions({
+        route,
         agent: agentAddress,
         owner: ready.owner,
         mandate: ready.account,
@@ -436,7 +469,7 @@ export function Dashboard() {
       const registered = await gate("/vendors", {
         wallet: item.address,
         name: item.name,
-        country: item.country,
+        country: route.toCountry,
         blocked: item.blocked,
       });
       if (registered.status >= 400) {
@@ -449,8 +482,8 @@ export function Dashboard() {
 
   async function writeCorridor(enabled: boolean) {
     const result = await gate("/corridors", {
-      fromCountry: "US",
-      toCountry: "US",
+      fromCountry: route.fromCountry,
+      toCountry: route.toCountry,
       enabled,
       perPaymentCap: usdcToBase(PER_PAYMENT),
       dailyCap: usdcToBase(10000),
@@ -460,7 +493,7 @@ export function Dashboard() {
       push("Corridor", errorText(result));
       return false;
     }
-    session.current.corridorSet = true;
+    session.current.corridorSet = route.id;
     return true;
   }
 
@@ -469,13 +502,17 @@ export function Dashboard() {
       push("Deployment required", "The Leash program is missing on devnet. No mandate or payment was created. Complete deployment before retrying.");
       return null;
     }
+    if (!(await accountExists(await corridorPda(route.fromCountry, route.toCountry)))) {
+      push("Route setup required", `${route.fromCountry} → ${route.toCountry} must be initialized on devnet before payment. No wallet transaction was requested.`);
+      return null;
+    }
     const activeMint = await loadMint();
     if (!activeMint) {
       push("Gate", "The gate did not report the test mint.");
       return null;
     }
     if (!(await registerVendors())) return null;
-    if (reopenCorridor || !session.current.corridorSet) {
+    if (reopenCorridor || session.current.corridorSet !== route.id) {
       if (!(await writeCorridor(true))) return null;
     }
     const who =
@@ -483,6 +520,7 @@ export function Dashboard() {
     if (
       session.current.mandateAccount &&
       session.current.mandateOwner === ownerAddress &&
+      session.current.mandateRoutes === CROSS_BORDER_ROUTES.map((item) => item.id).join(",") &&
       (startId === session.current.mandateId || !reopenCorridor)
     ) {
       if (reopenCorridor) {
@@ -516,7 +554,7 @@ export function Dashboard() {
           deliverySeconds: 3600,
           acceptanceSeconds: 3600,
           category: 7,
-          corridors: [{ fromCountry: "US", toCountry: "US" }],
+          corridors: CROSS_BORDER_ROUTES.map(({ fromCountry, toCountry }) => ({ fromCountry, toCountry })),
         });
         if (
           created.status === 409 &&
@@ -533,6 +571,7 @@ export function Dashboard() {
         session.current.mandateId = id;
         session.current.mandateAccount = mandate;
         session.current.mandateOwner = ownerAddress;
+        session.current.mandateRoutes = CROSS_BORDER_ROUTES.map((item) => item.id).join(",");
         setMandateId(id);
         setMandateAccount(mandate);
         push(
@@ -575,6 +614,10 @@ export function Dashboard() {
       push("Amount", "Enter a USDC amount greater than zero.");
       return null;
     }
+    if (!fxQuote || fxQuote.currency !== route.currency || Date.parse(fxQuote.expiresAt) <= Date.now()) {
+      push("Market rate unavailable", "Refresh the market rate before requesting this cross-border payment.");
+      return null;
+    }
     const ready = await ensureMandate(session.current.mandateId, false);
     if (!ready) return null;
     setLastClearance(null);
@@ -599,8 +642,8 @@ export function Dashboard() {
         vendor: chosen.address,
         mint: ready.mint,
         amount: base,
-        fromCountry: "US",
-        toCountry: "US",
+        fromCountry: route.fromCountry,
+        toCountry: route.toCountry,
         category: 7,
         purposeCode: 1001,
         invoiceHash,
@@ -615,6 +658,8 @@ export function Dashboard() {
           mint: ready.mint,
           amount: base,
           invoiceHash,
+          fromCountry: route.fromCountry,
+          toCountry: route.toCountry,
         }),
       };
       const result = await gate("/clearances/fund", fields);
@@ -652,7 +697,7 @@ export function Dashboard() {
       } else if (reasons.includes("DAILY_CAP")) {
         push(
           "Adapt",
-          "The US to US corridor has already committed its daily amount."
+          `The ${route.fromCountry} to ${route.toCountry} corridor has already committed its daily amount.`
         );
       } else if (reasons.includes("CORRIDOR_BLOCKED")) {
         push("Adapt", "The corridor is closed. Reopen it, or stop.");
@@ -669,7 +714,7 @@ export function Dashboard() {
         }
         if (!(await submitFund(ready, paymentId, chosen.address, result.body.instructionData, "Fund"))) return null;
         setLastPayment(paymentId);
-        setFunded({ invoiceHash, amount: base, vendor: chosen.address });
+        setFunded({ invoiceHash, amount: base, vendor: chosen.address, route: { fromCountry: route.fromCountry, toCountry: route.toCountry } });
       } else if (result.body.decision === "allow") {
         push("Fund failed", "The gate returned no transaction instruction. No payment was sent.");
         return null;
@@ -680,6 +725,7 @@ export function Dashboard() {
         invoiceHash,
         amount: base,
         vendor: chosen.address,
+        route: { fromCountry: route.fromCountry, toCountry: route.toCountry },
         clearance,
       };
     } catch (error) {
@@ -758,6 +804,7 @@ export function Dashboard() {
         invoiceHash: fundedPayment.invoiceHash,
         amount: fundedPayment.amount,
         vendor: fundedPayment.vendor,
+        route: fundedPayment.route,
       };
       account = session.current.mandateAccount;
       buyer = session.current.mandateOwner;
@@ -834,6 +881,8 @@ export function Dashboard() {
           mint: activeMint,
           amount: payment.amount,
           invoiceHash: payment.invoiceHash,
+          fromCountry: payment.route.fromCountry,
+          toCountry: payment.route.toCountry,
         }),
       });
       push(
@@ -841,9 +890,10 @@ export function Dashboard() {
         reasonsOf(release).join(", ") || "The gate signed the release."
       );
       if (release.body.decision === "allow" && typeof release.body.instructionData === "string") {
-        await recordTx("Release", "Submitted the release on devnet.", async () => {
+        const released = await recordTx("Release", "Submitted the release on devnet.", async () => {
           await sponsor(agentAddress);
           const instructions = await releaseInstructions({
+            route: payment.route,
             agent: agentAddress,
             vendor: payment.vendor,
             mint: activeMint,
@@ -852,6 +902,10 @@ export function Dashboard() {
           });
           return (await sendLocal(agent.secretKey, instructions)).signature;
         });
+        if (released) {
+          setFunded(null);
+          setLastClearance(null);
+        }
       }
     } catch (error) {
       push(
@@ -890,6 +944,7 @@ export function Dashboard() {
         async () => {
           await sponsor(agentAddress);
           const instructions = await fundInstructions({
+            route: { fromCountry: new TextDecoder().decode(message.subarray(172, 174)), toCountry: new TextDecoder().decode(message.subarray(174, 176)) },
             agent: agentAddress,
             owner: session.current.mandateOwner,
             mandate: readyAccount,
@@ -931,8 +986,8 @@ export function Dashboard() {
         vendor: vendor.address,
         mint: ready.mint,
         amount: base,
-        fromCountry: "US",
-        toCountry: "US",
+        fromCountry: route.fromCountry,
+        toCountry: route.toCountry,
         category: 7,
         purposeCode: 1001,
         invoiceHash,
@@ -1257,13 +1312,30 @@ export function Dashboard() {
               onChange={(event) => setGoal(event.target.value)}
               rows={2}
             />
-            <label htmlFor="amount">Amount in test USDC</label>
+            <label htmlFor="payment-route">Cross-border route</label>
+            <select id="payment-route" value={routeId} disabled={busy} onChange={(event) => {
+              setRouteId(event.target.value);
+              setLastClearance(null);
+            }}>
+              {CROSS_BORDER_ROUTES.map((item) => <option key={item.id} value={item.id}>{item.fromCountry} → {item.toCountry} · {item.label} · {item.currency}</option>)}
+            </select>
+            <label htmlFor="amount">You send · test USDC</label>
             <input
               id="amount"
               inputMode="decimal"
               value={amount}
               onChange={(event) => setAmount(event.target.value)}
             />
+            <div className="d-fx-quote" aria-live="polite">
+              <span className="d-section-title">Recipient currency estimate</span>
+              <strong>{fxQuote?.currency === route.currency ? formatLocalAmount(Number(amount), fxQuote) : "—"}</strong>
+              {fxQuote?.currency === route.currency ? <>
+                <span>1 USDC ≈ {formatLocalAmount(1, fxQuote)}</span>
+                <small>Coinbase market rate · fetched {new Date(fxQuote.fetchedAt).toLocaleTimeString()} · refreshes automatically</small>
+              </> : <span>{fxError || "Fetching the current market rate…"}</span>}
+              <small>Settlement is in test USDC. This currency estimate excludes conversion fees and is not a bank payout or a locked exchange quote.</small>
+              <button type="button" className="d-btn d-btn-ghost" disabled={busy} onClick={() => setFxRefresh((value) => value + 1)}>Refresh rate</button>
+            </div>
             <fieldset className="d-vendors">
               <legend>Vendor</legend>
               <div className="d-vendor-row" role="radiogroup" aria-label="Vendor">
@@ -1308,11 +1380,11 @@ export function Dashboard() {
               </div>
               <div>
                 <dt>Corridor</dt>
-                <dd>US to US</dd>
+                <dd>{route.fromCountry} → {route.toCountry}</dd>
               </div>
               <div>
                 <dt>Invoice</dt>
-                <dd>USD, one dollar to one USDC</dd>
+                <dd>Settled in test USDC · {route.currency} estimate above</dd>
               </div>
               <div>
                 <dt>Budget</dt>
@@ -1358,17 +1430,17 @@ export function Dashboard() {
                 type="button"
                 className="d-btn d-btn-secondary"
                 onClick={() => run(deliverAndRelease)}
-                disabled={txOff || !lastClearance || vendor.blocked || funded?.vendor !== vendor.address}
+                disabled={txOff || !funded || vendor.blocked || funded.vendor !== vendor.address}
                 aria-busy={busy}
-                aria-describedby={lastClearance ? undefined : "release-hint"}
+                aria-describedby={funded ? undefined : "release-hint"}
               >
                 {busy ? <Spinner /> : null}
-                Deliver and release
+                Deliver and release{funded ? ` · ${funded.route.fromCountry} → ${funded.route.toCountry}` : ""}
               </button>
             </div>
-            {lastClearance ? null : (
+            {funded ? null : (
               <p id="release-hint" className="d-hint">
-                Deliver and release stays off until a clearance has been issued.
+                Deliver and release becomes available after a payment is funded.
               </p>
             )}
           </form>

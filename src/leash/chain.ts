@@ -21,6 +21,7 @@ import {
   type Instruction,
 } from "@solana/kit";
 import { DEVNET_GENESIS_HASH } from "./wallet.ts";
+import { CROSS_BORDER_ROUTES, countrySeed, type PaymentRoute } from "./corridors.ts";
 export const DEVNET_RPC = "https://api.devnet.solana.com";
 const TOKEN_PROGRAM = address("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const ATA_PROGRAM = address("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
@@ -111,8 +112,8 @@ export async function configPda() {
   return pda([textSeed("config")]);
 }
 
-export async function corridorPda() {
-  return pda([textSeed("corridor"), new Uint8Array([85, 83]), new Uint8Array([85, 83])]);
+export async function corridorPda(fromCountry: string, toCountry: string) {
+  return pda([textSeed("corridor"), countrySeed(fromCountry), countrySeed(toCountry)]);
 }
 
 export async function treasuryPda(mandate: string) {
@@ -399,8 +400,8 @@ export async function createMandateInstruction(input: {
     i64(3600),
     i64(3600),
     u16(7),
-    u32(1),
-    new Uint8Array([85, 83, 85, 83]),
+    u32(CROSS_BORDER_ROUTES.length),
+    ...CROSS_BORDER_ROUTES.map((route) => concat(countrySeed(route.fromCountry), countrySeed(route.toCountry))),
   );
   return ix(
     PROGRAM,
@@ -456,6 +457,7 @@ export async function depositInstruction(input: {
 }
 
 export async function fundInstructions(input: {
+  route: PaymentRoute;
   agent: string;
   owner: string;
   mandate: string;
@@ -472,7 +474,7 @@ export async function fundInstructions(input: {
       { address: address(input.owner), role: AccountRole.READONLY },
       { address: address(input.mandate), role: AccountRole.WRITABLE },
       { address: await configPda(), role: AccountRole.READONLY },
-      { address: await corridorPda(), role: AccountRole.WRITABLE },
+      { address: await corridorPda(input.route.fromCountry, input.route.toCountry), role: AccountRole.WRITABLE },
       { address: await treasuryPda(input.mandate), role: AccountRole.READONLY },
       { address: await treasuryVaultPda(input.mandate), role: AccountRole.WRITABLE },
       { address: await escrowPda(input.paymentId), role: AccountRole.WRITABLE },
@@ -487,8 +489,8 @@ export async function fundInstructions(input: {
       await discriminator("create_and_fund"),
       input.paymentId,
       u64(input.mandateId),
-      new Uint8Array([85, 83]),
-      new Uint8Array([85, 83]),
+      countrySeed(input.route.fromCountry),
+      countrySeed(input.route.toCountry),
     ),
   );
   return [ed25519Instruction(input.ed25519), program];
@@ -536,6 +538,7 @@ export async function verifyInstruction(input: {
 }
 
 export async function releaseInstructions(input: {
+  route: PaymentRoute;
   agent: string;
   vendor: string;
   mint: string;
@@ -549,7 +552,7 @@ export async function releaseInstructions(input: {
       { address: await escrowPda(input.paymentId), role: AccountRole.WRITABLE },
       { address: await escrowVaultPda(input.paymentId), role: AccountRole.WRITABLE },
       { address: await configPda(), role: AccountRole.READONLY },
-      { address: await corridorPda(), role: AccountRole.READONLY },
+      { address: await corridorPda(input.route.fromCountry, input.route.toCountry), role: AccountRole.READONLY },
       { address: address(input.vendor), role: AccountRole.READONLY },
       { address: await ataPda(input.vendor, input.mint), role: AccountRole.WRITABLE },
       { address: address(input.mint), role: AccountRole.READONLY },

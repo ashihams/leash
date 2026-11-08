@@ -231,6 +231,14 @@ Range is optional. It stays off unless `RANGE_API_KEY` is set, and the clearance
 
 ## Learn More
 
+### Cross-border routes and market conversion
+
+The payment form defaults to US → India and offers US → United Kingdom, Germany, and Philippines. These routes are seeded in the gate on startup without overwriting existing policy. Newly created mandates authorize those four routes; the selected route is included in the signed intent, clearance, funding instruction, and escrow. Release uses the funded payment's original route even if the form selection changes.
+
+`GET /fx/quote?currency=INR` (also GBP, EUR, PHP) fetches current USDC exchange rates from Coinbase's public exchange-rate API. The server caches a validated response for at most 60 seconds; the UI displays its fetch time and refreshes at expiry. Invalid data, provider failures, and unsupported currencies produce an unavailable state; expired rates are not reused. The displayed recipient-currency amount is an estimate, excludes conversion fees, and does not execute an FX trade or a fiat bank payout. Transfers remain in test USDC.
+
+`node scripts/seed-corridors.mjs` simulates the four on-chain route accounts and reports the rent/fees without signing. After approval, `node scripts/seed-corridors.mjs --send` initializes missing routes using the existing devnet program admin. Existing valid routes are skipped. Payment setup stops before wallet prompts while a selected on-chain route is missing.
+
 - [Solana Docs](https://solana.com/docs) - core concepts and guides
 - [Anchor Docs](https://www.anchor-lang.com/docs) - program development framework
 - [Deploying Programs](https://solana.com/docs/programs/deploying) - deployment guide
