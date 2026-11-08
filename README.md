@@ -170,6 +170,12 @@ Wallet screening uses the OFAC SDN Advanced XML export. It is a public file and 
 
 Didit identity sessions stay server-side. `DIDIT_API_KEY`, `DIDIT_WORKFLOW_ID`, and `DIDIT_WEBHOOK_SECRET` are required or the gate refuses to start. Sessions are created at `POST https://verification.didit.me/v3/session/` with `vendor_data` set to the vendor wallet.
 
+The local runtime (`npm run server`) and serverless runtime both enforce OFAC and Didit. The dashboard checks the selected vendor before wallet setup, and the server repeats checks before signing funding or release. Didit's current decision is fetched from `/v3/session/{id}/decision/` and must match the stored session and wallet. A missing session, incomplete verification, API outage, wallet mismatch, or failed evidence write cannot produce an allow. Cached approval alone is insufficient. The runtime disables `/demo/force-clearance`; provider bypasses exist only as explicit options in isolated unit fixtures.
+
+Apply `supabase/migrations/20261108080000_gate_provider_checks.sql` for provider evidence on Supabase. With history configured, local and serverless identity sessions/evidence use the same Supabase tables. `node scripts/check-live-providers.mjs` checks the configured Didit credentials/workflow and OFAC list without creating paid verification sessions. The dashboard's **Verify selected vendor with Didit** button requires an owner login and opens the provider's session URL. Complete that verification before retrying payment. Demo vendor keys are generated for each page session; a reloaded page has new vendor wallets and needs new verification. Production vendors must use stable, registered payout wallets.
+
+Grey Market's local block is an additional demo policy rule. It is not evidence of an OFAC match. Provider evidence reports the real OFAC list result separately from Didit identity status and the local policy result.
+
 Pages read before writing this client:
 
 - [OFAC SDN Advanced XML](https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN_ADVANCED.XML)

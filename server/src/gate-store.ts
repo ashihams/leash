@@ -350,7 +350,9 @@ export function supabaseGateStore(client: SupabaseClient): GateStore {
         })
         .select("id")
         .single();
-      return num(must(result).id);
+      const row = must(result);
+      if (!row) throw new Error("EVIDENCE_WRITE_FAILED");
+      return num(row.id);
     },
     async listEvidence(paymentId) {
       const result = await client
@@ -358,7 +360,7 @@ export function supabaseGateStore(client: SupabaseClient): GateStore {
         .select("*")
         .eq("payment_id", paymentId)
         .order("id");
-      return must(result).map((row) => ({
+      return (must(result) ?? []).map((row) => ({
         id: num(row.id),
         createdAt: num(row.created_at),
         kind: row.kind,
@@ -375,8 +377,9 @@ export function supabaseGateStore(client: SupabaseClient): GateStore {
         forced: Boolean(row.forced),
       }));
     },
-    async listProviderChecks() {
-      return [];
+    async listProviderChecks(paymentId) {
+      const rows = must(await client.from("gate_provider_checks").select("check_id,status,reason_code,evidence_hash,provider,environment,public_note").eq("payment_id", paymentId).order("created_at"));
+      return (rows ?? []).map((row) => ({ checkId: row.check_id, status: row.status, reasonCode: row.reason_code, evidenceHash: row.evidence_hash, provider: row.provider, environment: row.environment, publicNote: row.public_note }));
     },
   };
 }

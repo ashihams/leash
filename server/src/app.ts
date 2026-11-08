@@ -25,6 +25,7 @@ import {
 } from "./clearance.ts";
 import { sqliteGateStore, type GateStore } from "./gate-store.ts";
 import type { DatabaseSync } from "node:sqlite";
+import type { PaymentRow } from "./db.ts";
 import { runProviderGate, type ProviderGateResult } from "./providers/gate.ts";
 import {
   registerProviderRoutes,
@@ -49,6 +50,9 @@ export type GateOptions = {
   now?: () => number;
   clearanceTtlSeconds?: number;
   providerRoutes?: ProviderRouteDeps;
+  // Explicitly limited to isolated tests; runtime entrypoints never set these.
+  allowWithoutProviders?: boolean;
+  allowDemoOverrides?: boolean;
   persistHistory?: (record: {
     paymentId: string;
     buyer: string;
@@ -91,6 +95,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
     mint: configuredMint,
     policyVersion: options.policyVersion,
     clearanceBytes: CLEARANCE_LEN,
+    providersEnforced: Boolean(options.providerRoutes),
   }));
 
   app.post("/vendors", async (request) => {
@@ -109,7 +114,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
     await store.upsertCorridor({
       fromCountry: country(body.fromCountry),
       toCountry: country(body.toCountry),
-      enabled: body.enabled !== false,
+      enabled: body.enabled !== false ? 1 : 0,
       perPaymentCap: amount(body.perPaymentCap),
       dailyCap: amount(body.dailyCap),
       packetThreshold: nonNegative(body.packetThreshold ?? 0),
@@ -167,13 +172,17 @@ export function buildApp(options: GateOptions): FastifyInstance {
     const providerResult = options.providerRoutes
       ? await runProviderGate({
           db: options.db,
+          store: options.providerRoutes.store,
+          identity: options.providerRoutes.identity,
           sanctions: options.providerRoutes.sanctions,
           vendor: fields.vendor.text,
           paymentId: fields.paymentId.text,
           environment: options.providerRoutes.environment,
           nowMs: now() * 1000,
         })
-      : ({ ok: true } satisfies ProviderGateResult);
+      : options.allowWithoutProviders
+        ? ({ ok: true } satisfies ProviderGateResult)
+        : ({ ok: false, unavailable: true, reason: "PROVIDERS_NOT_CONFIGURED" } satisfies ProviderGateResult);
     if (!providerResult.ok && providerResult.unavailable) {
       throw new HttpError(503, "CHECK_UNAVAILABLE", {
         reason: providerResult.reason,
@@ -307,6 +316,11 @@ export function buildApp(options: GateOptions): FastifyInstance {
     const paymentId = hash(body.paymentId, "PAYMENT_ID").text;
     const payment = await store.getPayment(paymentId);
     if (!payment) throw new HttpError(404, "PAYMENT_UNKNOWN");
+    if (!options.providerRoutes && !options.allowWithoutProviders) throw new HttpError(503, "CHECK_UNAVAILABLE");
+    if (options.providerRoutes) {
+      const providers = await runProviderGate({ ...options.providerRoutes, vendor: payment.vendor, paymentId, nowMs: now() * 1000 });
+      if (!providers.ok) throw new HttpError(providers.unavailable ? 503 : 409, providers.unavailable ? "CHECK_UNAVAILABLE" : providers.reasons[0] ?? "CHECK_FAILED");
+    }
     const dispute = bool(body.dispute);
     const fields = fieldsFromPayment(payment);
     const intentOk = verifyIntent(
@@ -387,6 +401,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
   });
 
   app.post("/demo/force-clearance", async (request) => {
+    if (!options.allowDemoOverrides) throw new HttpError(403, "DEMO_OVERRIDE_DISABLED");
     const body = record(request.body);
     const fields = readPaymentFields(body);
     const kind =
@@ -422,7 +437,9 @@ export function buildApp(options: GateOptions): FastifyInstance {
   app.get("/evidence/:paymentId", async (request) => {
     const params = request.params as { paymentId: string };
     const paymentId = hash(params.paymentId, "PAYMENT_ID").text;
-    const providerChecks = await store.listProviderChecks(paymentId);
+    const providerChecks = options.providerRoutes?.store
+      ? await options.providerRoutes.store.listChecks(paymentId)
+      : await store.listProviderChecks(paymentId);
     const notes = providerChecks
       .map((check) => check.publicNote)
       .filter((note) => note.length > 0);
@@ -548,7 +565,7 @@ async function sign(
       buyer: input.fields.buyer.text,
       vendor: input.fields.vendor.text,
       amount: input.fields.amount,
-      decision: result.decision,
+      decision: result.decision as "allow" | "deny",
       kind: input.kind === KIND_FUND ? "fund" : "release",
       checksRun: input.evaluation.checksRun,
       checksFailed: input.evaluation.checksFailed,
@@ -609,7 +626,7 @@ function readPaymentFields(body: Record<string, unknown>): PaymentFields {
 }
 
 function fieldsFromPayment(
-  payment: NonNullable<ReturnType<typeof getPayment>>
+  payment: PaymentRow
 ): PaymentFields {
   return {
     mandateId: payment.mandateId,

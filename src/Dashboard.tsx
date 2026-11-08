@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useWalletConnection } from "@solana/react-hooks";
 import nacl from "tweetnacl";
 import { AccountAccess } from "./AccountAccess";
+import { supabase } from "./lib/supabase";
 import "./dashboard.css";
 import { refreshPhantomChains, usePhantomChains } from "./providers";
 import {
@@ -91,7 +92,7 @@ export function Dashboard() {
           name: "Grey Market",
           country: "US",
           blocked: true,
-          note: "On the local block list. The gate should refuse.",
+          note: "Blocked by local policy. OFAC screening and Didit verification are separate checks.",
         },
       ].map((vendor) => {
         const pair = nacl.sign.keyPair();
@@ -109,6 +110,7 @@ export function Dashboard() {
   const [mandateId, setMandateId] = useState(7);
   const [mandateAccount, setMandateAccount] = useState("");
   const [vendorName, setVendorName] = useState(vendors[0].name);
+  const [verificationLink, setVerificationLink] = useState<{ wallet: string; url: string } | null>(null);
   const [amount, setAmount] = useState(String(PAYMENT));
   const [goal, setGoal] = useState("Buy a logo from a studio for 1 USDC.");
   const [busy, setBusy] = useState(false);
@@ -575,6 +577,14 @@ export function Dashboard() {
     }
     const ready = await ensureMandate(session.current.mandateId, false);
     if (!ready) return null;
+    setLastClearance(null);
+    const screening = await gate(`/vendors/${chosen.address}/checks`, {});
+    if (typeof screening.body.paymentId === "string") await showProviderEvidence(screening.body.paymentId);
+    if (screening.status >= 400 || screening.body.ok !== true) {
+      const reasons = Array.isArray(screening.body.reasons) ? screening.body.reasons.join(", ") : String(screening.body.reason ?? screening.body.error ?? "CHECK_UNAVAILABLE");
+      push(`${chosen.name} · Deny`, reasons);
+      return null;
+    }
     // Blocked vendors must reach the gate's refusal without wallet setup prompts.
     if (!chosen.blocked && !(await prepareTreasury(ready, usdcToBase(BUDGET)))) return null;
     try {
@@ -608,6 +618,7 @@ export function Dashboard() {
         }),
       };
       const result = await gate("/clearances/fund", fields);
+      await showProviderEvidence(paymentId);
       const clearance =
         result.body.decision === "allow" &&
         typeof result.body.message === "string" &&
@@ -678,6 +689,36 @@ export function Dashboard() {
       );
       return null;
     }
+  }
+
+  async function showProviderEvidence(paymentId: string) {
+    const evidence = await gate(`/evidence/${paymentId}`);
+    if (!Array.isArray(evidence.body.providerChecks)) return;
+    for (const raw of evidence.body.providerChecks) {
+      const check = raw as Record<string, unknown>;
+      push(`${String(check.provider).toUpperCase()} · ${check.status === "pass" ? "Pass" : "Refused"}`, String(check.publicNote || check.reasonCode || "Provider check passed."));
+    }
+  }
+
+  async function startVendorVerification() {
+    if (verificationLink?.wallet === vendor.address) return;
+    const { data } = supabase ? await supabase.auth.getSession() : { data: { session: null } };
+    if (!data.session) {
+      push("Didit", "Sign in with an owner account before starting vendor verification.");
+      return;
+    }
+    const response = await fetch(`${import.meta.env.VITE_GATE_URL ?? "/gate"}/vendors/${vendor.address}/verification`, {
+      method: "POST", headers: { authorization: `Bearer ${data.session.access_token}` },
+    });
+    const body = await response.json() as Record<string, unknown>;
+    if (!response.ok || typeof body.url !== "string") {
+      push("Didit", String(body.error ?? "CHECK_UNAVAILABLE"));
+      return;
+    }
+    const url = new URL(body.url);
+    if (url.protocol !== "https:" || !["verify.didit.me", "verification.didit.me"].includes(url.hostname)) throw new Error("Unexpected Didit verification URL");
+    setVerificationLink({ wallet: vendor.address, url: url.href });
+    push("Didit session", "Open the verification link and complete the vendor's verification, then ask for a clearance again. A session link is not an approval.");
   }
 
   function remember(result: GateResult) {
@@ -1253,6 +1294,9 @@ export function Dashboard() {
                 ))}
               </div>
             </fieldset>
+            <button type="button" className="d-btn d-btn-secondary" disabled={busy} onClick={() => run(startVendorVerification)}>Verify selected vendor with Didit</button>
+            {verificationLink?.wallet === vendor.address ? <a className="d-btn d-btn-secondary" href={verificationLink.url} target="_blank" rel="noopener noreferrer">Open Didit verification</a> : null}
+            <p className="d-hint">OFAC screening and Didit approval are required before payment. Keep this page open during verification; refreshing creates new demo vendor wallets.</p>
             <dl className="d-terms">
               <div>
                 <dt>Category</dt>

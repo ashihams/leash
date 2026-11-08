@@ -251,6 +251,8 @@ async function setup() {
   const mint = nacl.sign.keyPair().publicKey;
   const mandate = nacl.sign.keyPair().publicKey;
   const app = buildApp({
+    allowWithoutProviders: true,
+    allowDemoOverrides: true,
     db: openDatabase(":memory:"),
     policy,
     verifier: nacl.sign.keyPair().publicKey,

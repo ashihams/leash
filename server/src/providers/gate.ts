@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import {
-  getIdentity,
-  insertProviderCheck,
-  type IdentityRow,
-} from "../db.ts";
+import { type IdentityRow } from "../db.ts";
+import { sqliteProviderStore, type ProviderStore } from "./store.ts";
 import { evidenceHash } from "./evidence.ts";
 import { ProviderHttpError } from "./http.ts";
 import { identityCheck } from "./identity.ts";
 import { OfacScreenError } from "./ofac.ts";
-import type { SanctionsScreeningProvider } from "./types.ts";
+import type {
+  IdentityVerificationProvider,
+  SanctionsScreeningProvider,
+} from "./types.ts";
 
 export type ProviderGateResult =
   | { ok: true }
@@ -22,13 +22,19 @@ export type ProviderGateResult =
     };
 
 export async function runProviderGate(input: {
-  db: DatabaseSync;
+  db?: DatabaseSync;
+  store?: ProviderStore;
+  identity: IdentityVerificationProvider;
   sanctions: SanctionsScreeningProvider;
   vendor: string;
   paymentId: string;
   environment: string;
   nowMs: number;
 }): Promise<ProviderGateResult> {
+  const store =
+    input.store ?? (input.db ? sqliteProviderStore(input.db) : undefined);
+  if (!store)
+    return { ok: false, unavailable: true, reason: "CHECK_UNAVAILABLE" };
   const createdAt = new Date(input.nowMs).toISOString();
   let sanctionsStatus: "pass" | "flag" | "fail" = "fail";
   let sanctionsReason = "CHECK_UNAVAILABLE";
@@ -62,7 +68,7 @@ export async function runProviderGate(input: {
       throw error;
     }
   }
-  record(input, {
+  await record(store, {
     paymentId: input.paymentId,
     wallet: input.vendor,
     checkId: "sanctions",
@@ -74,18 +80,44 @@ export async function runProviderGate(input: {
     publicNote: sanctionsNote,
     createdAt,
   });
-  if (sanctionsReason === "CHECK_UNAVAILABLE" || sanctionsReason === "LIST_STALE") {
+  if (
+    sanctionsReason === "CHECK_UNAVAILABLE" ||
+    sanctionsReason === "LIST_STALE"
+  ) {
     return { ok: false, unavailable: true, reason: unavailableReason };
   }
 
-  const identity = getIdentity(input.db, input.vendor);
+  let identity = await store.getIdentity(input.vendor);
+  if (identity) {
+    try {
+      const live = await input.identity.getDecision(
+        identity.sessionId,
+        input.vendor
+      );
+      identity = { ...identity, status: live.status, updatedAt: createdAt };
+      await store.saveIdentity(identity);
+    } catch {
+      await record(store, {
+        paymentId: input.paymentId,
+        wallet: input.vendor,
+        checkId: "identity",
+        status: "fail",
+        reasonCode: "CHECK_UNAVAILABLE",
+        evidenceHash: evidenceHash({ error: "CHECK_UNAVAILABLE" }),
+        provider: "didit",
+        environment: input.environment,
+        createdAt,
+      });
+      return { ok: false, unavailable: true, reason: "CHECK_UNAVAILABLE" };
+    }
+  }
   const identityResult = identityCheck({
     record: identity
       ? { status: identity.status, expiresAt: identity.expiresAt }
       : null,
     nowMs: input.nowMs,
   });
-  record(input, {
+  await record(store, {
     paymentId: input.paymentId,
     wallet: input.vendor,
     checkId: "identity",
@@ -98,10 +130,9 @@ export async function runProviderGate(input: {
   });
 
   const reasons = [sanctionsReason, identityResult.reasonCode].filter(
-    (reason) => reason.length > 0,
+    (reason) => reason.length > 0
   );
-  const flagged =
-    sanctionsStatus === "flag" || identityResult.status === "flag";
+  const flagged = identityResult.status === "flag";
   const failed = sanctionsStatus === "fail" || identityResult.status === "fail";
   if (!failed && !flagged) return { ok: true };
   return {
@@ -133,8 +164,8 @@ function identitySummary(row: IdentityRow | undefined) {
   };
 }
 
-function record(
-  input: { db: DatabaseSync },
+async function record(
+  store: ProviderStore,
   row: {
     paymentId: string;
     wallet: string;
@@ -146,7 +177,7 @@ function record(
     environment: string;
     publicNote?: string;
     createdAt: string;
-  },
+  }
 ) {
-  insertProviderCheck(input.db, { id: randomUUID(), ...row });
+  await store.insertCheck({ id: randomUUID(), ...row });
 }

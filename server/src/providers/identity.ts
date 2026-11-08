@@ -26,7 +26,7 @@ export class DiditIdentity implements IdentityVerificationProvider {
     apiKey: string,
     workflowId: string,
     webhookSecret: string,
-    fetchImpl: typeof fetch = fetch,
+    fetchImpl: typeof fetch = fetch
   ) {
     this.apiKey = apiKey;
     this.workflowId = workflowId;
@@ -35,11 +35,36 @@ export class DiditIdentity implements IdentityVerificationProvider {
   }
 
   async ping(): Promise<void> {
-    await providerRequest(
+    const response = await providerRequest(
       `${DIDIT_BASE}/v3/session/00000000-0000-0000-0000-000000000000/decision/`,
       { method: "GET", headers: { "x-api-key": this.apiKey } },
-      this.fetchImpl,
+      this.fetchImpl
     );
+    if (
+      response.status !== 404 &&
+      (response.status < 200 || response.status >= 300)
+    )
+      throw new ProviderHttpError("HTTP");
+  }
+
+  async getDecision(sessionId: string, vendorWallet: string) {
+    const response = await providerRequest(
+      `${DIDIT_BASE}/v3/session/${encodeURIComponent(sessionId)}/decision/`,
+      { method: "GET", headers: { "x-api-key": this.apiKey } },
+      this.fetchImpl
+    );
+    if (response.status < 200 || response.status >= 300)
+      throw new ProviderHttpError("HTTP");
+    const body = response.body as Record<string, unknown> | null;
+    if (
+      !body ||
+      body.session_id !== sessionId ||
+      body.vendor_data !== vendorWallet ||
+      typeof body.status !== "string" ||
+      (body.workflow_id !== undefined && body.workflow_id !== this.workflowId)
+    )
+      throw new ProviderHttpError("MALFORMED");
+    return { status: body.status, expiresAt: null };
   }
 
   async createSession(vendorWallet: string): Promise<VerificationSession> {
@@ -56,7 +81,7 @@ export class DiditIdentity implements IdentityVerificationProvider {
           vendor_data: vendorWallet,
         }),
       },
-      this.fetchImpl,
+      this.fetchImpl
     );
     if (response.status < 200 || response.status >= 300) {
       throw new ProviderHttpError("HTTP");
@@ -80,16 +105,22 @@ export class DiditIdentity implements IdentityVerificationProvider {
   parseWebhook(
     headers: Record<string, string | string[] | undefined>,
     rawBody: Buffer,
-    nowSeconds: number,
+    nowSeconds: number
   ): WebhookVerdict {
     const signature = header(headers, "x-signature");
     const timestamp = header(headers, "x-timestamp");
-    if (!signature || !timestamp) return { ok: false, statusCode: 401, code: "UNSIGNED" };
+    if (!signature || !timestamp)
+      return { ok: false, statusCode: 401, code: "UNSIGNED" };
     const issued = Number(timestamp);
-    if (!Number.isFinite(issued) || Math.abs(nowSeconds - issued) > MAX_SKEW_SECONDS) {
+    if (
+      !Number.isFinite(issued) ||
+      Math.abs(nowSeconds - issued) > MAX_SKEW_SECONDS
+    ) {
       return { ok: false, statusCode: 401, code: "STALE" };
     }
-    const expected = createHmac("sha256", this.webhookSecret).update(rawBody).digest("hex");
+    const expected = createHmac("sha256", this.webhookSecret)
+      .update(rawBody)
+      .digest("hex");
     const left = Buffer.from(expected);
     const right = Buffer.from(signature);
     if (left.length !== right.length || !timingSafeEqual(left, right)) {
@@ -117,7 +148,10 @@ export class DiditIdentity implements IdentityVerificationProvider {
       sessionId,
       vendorWallet,
       status,
-      environment: environment === "sandbox" || environment === "live" ? environment : "unspecified",
+      environment:
+        environment === "sandbox" || environment === "live"
+          ? environment
+          : "unspecified",
       expiresAt: null,
     };
   }
@@ -127,8 +161,12 @@ export function identityCheck(input: {
   record: { status: string; expiresAt: string | null } | null;
   nowMs: number;
 }): { status: "pass" | "flag" | "fail"; reasonCode: string } {
-  if (!input.record) return { status: "fail", reasonCode: "VENDOR_NOT_REGISTERED" };
-  if (input.record.expiresAt && Date.parse(input.record.expiresAt) <= input.nowMs) {
+  if (!input.record)
+    return { status: "fail", reasonCode: "VENDOR_NOT_REGISTERED" };
+  if (
+    input.record.expiresAt &&
+    Date.parse(input.record.expiresAt) <= input.nowMs
+  ) {
     return { status: "fail", reasonCode: "VENDOR_CREDENTIAL_EXPIRED" };
   }
   switch (input.record.status) {
@@ -147,14 +185,17 @@ export function identityCheck(input: {
 
 function header(
   headers: Record<string, string | string[] | undefined>,
-  name: string,
+  name: string
 ): string {
   const value = headers[name] ?? headers[name.toLowerCase()];
   if (Array.isArray(value)) return value[0] ?? "";
   return value ?? "";
 }
 
-function stringField(body: Record<string, unknown>, key: string): string | null {
+function stringField(
+  body: Record<string, unknown>,
+  key: string
+): string | null {
   const value = body[key];
   return typeof value === "string" && value.length > 0 ? value : null;
 }
