@@ -46,6 +46,8 @@ export function signIntent(
     mint: string;
     amount: number;
     invoiceHash: string;
+    fromCountry: string;
+    toCountry: string;
   }
 ): string {
   const message = intentMessage({
@@ -56,8 +58,8 @@ export function signIntent(
     vendor: decodeBase58(input.vendor),
     mint: decodeBase58(input.mint),
     amount: input.amount,
-    fromCountry: "US",
-    toCountry: "US",
+    fromCountry: input.fromCountry,
+    toCountry: input.toCountry,
     category: 7,
     purposeCode: 1001,
     invoiceHash: hexToBytes(input.invoiceHash),

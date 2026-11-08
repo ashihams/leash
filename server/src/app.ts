@@ -25,6 +25,9 @@ import {
 } from "./clearance.ts";
 import { sqliteGateStore, type GateStore } from "./gate-store.ts";
 import type { DatabaseSync } from "node:sqlite";
+import type { PaymentRow } from "./db.ts";
+import { registerFxRoutes } from "./fx.ts";
+import { CROSS_BORDER_ROUTES } from "../../src/leash/corridors.ts";
 import { runProviderGate, type ProviderGateResult } from "./providers/gate.ts";
 import {
   registerProviderRoutes,
@@ -49,6 +52,9 @@ export type GateOptions = {
   now?: () => number;
   clearanceTtlSeconds?: number;
   providerRoutes?: ProviderRouteDeps;
+  // Explicitly limited to isolated tests; runtime entrypoints never set these.
+  allowWithoutProviders?: boolean;
+  allowDemoOverrides?: boolean;
   persistHistory?: (record: {
     paymentId: string;
     buyer: string;
@@ -67,8 +73,16 @@ export type GateOptions = {
 export function buildApp(options: GateOptions): FastifyInstance {
   const store = options.store ?? sqliteGateStore(options.db as DatabaseSync);
   const app = Fastify({ logger: false });
+  registerFxRoutes(app);
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const ttl = options.clearanceTtlSeconds ?? 120;
+  app.addHook("onReady", async () => {
+    for (const { fromCountry, toCountry } of CROSS_BORDER_ROUTES) {
+      if (!(await store.getCorridor(fromCountry, toCountry))) {
+        await store.upsertCorridor({ fromCountry, toCountry, enabled: 1, perPaymentCap: 1_000_000, dailyCap: 10_000_000_000, packetThreshold: 0 });
+      }
+    }
+  });
   const configuredMint = encodeBase58(readPubkey(options.mint, "MINT"));
 
   app.setErrorHandler((error, _request, reply) => {
@@ -91,6 +105,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
     mint: configuredMint,
     policyVersion: options.policyVersion,
     clearanceBytes: CLEARANCE_LEN,
+    providersEnforced: Boolean(options.providerRoutes),
   }));
 
   app.post("/vendors", async (request) => {
@@ -109,7 +124,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
     await store.upsertCorridor({
       fromCountry: country(body.fromCountry),
       toCountry: country(body.toCountry),
-      enabled: body.enabled !== false,
+      enabled: body.enabled !== false ? 1 : 0,
       perPaymentCap: amount(body.perPaymentCap),
       dailyCap: amount(body.dailyCap),
       packetThreshold: nonNegative(body.packetThreshold ?? 0),
@@ -167,13 +182,17 @@ export function buildApp(options: GateOptions): FastifyInstance {
     const providerResult = options.providerRoutes
       ? await runProviderGate({
           db: options.db,
+          store: options.providerRoutes.store,
+          identity: options.providerRoutes.identity,
           sanctions: options.providerRoutes.sanctions,
           vendor: fields.vendor.text,
           paymentId: fields.paymentId.text,
           environment: options.providerRoutes.environment,
           nowMs: now() * 1000,
         })
-      : ({ ok: true } satisfies ProviderGateResult);
+      : options.allowWithoutProviders
+        ? ({ ok: true } satisfies ProviderGateResult)
+        : ({ ok: false, unavailable: true, reason: "PROVIDERS_NOT_CONFIGURED" } satisfies ProviderGateResult);
     if (!providerResult.ok && providerResult.unavailable) {
       throw new HttpError(503, "CHECK_UNAVAILABLE", {
         reason: providerResult.reason,
@@ -307,6 +326,11 @@ export function buildApp(options: GateOptions): FastifyInstance {
     const paymentId = hash(body.paymentId, "PAYMENT_ID").text;
     const payment = await store.getPayment(paymentId);
     if (!payment) throw new HttpError(404, "PAYMENT_UNKNOWN");
+    if (!options.providerRoutes && !options.allowWithoutProviders) throw new HttpError(503, "CHECK_UNAVAILABLE");
+    if (options.providerRoutes) {
+      const providers = await runProviderGate({ ...options.providerRoutes, vendor: payment.vendor, paymentId, nowMs: now() * 1000 });
+      if (!providers.ok) throw new HttpError(providers.unavailable ? 503 : 409, providers.unavailable ? "CHECK_UNAVAILABLE" : providers.reasons[0] ?? "CHECK_FAILED");
+    }
     const dispute = bool(body.dispute);
     const fields = fieldsFromPayment(payment);
     const intentOk = verifyIntent(
@@ -387,6 +411,7 @@ export function buildApp(options: GateOptions): FastifyInstance {
   });
 
   app.post("/demo/force-clearance", async (request) => {
+    if (!options.allowDemoOverrides) throw new HttpError(403, "DEMO_OVERRIDE_DISABLED");
     const body = record(request.body);
     const fields = readPaymentFields(body);
     const kind =
@@ -422,7 +447,9 @@ export function buildApp(options: GateOptions): FastifyInstance {
   app.get("/evidence/:paymentId", async (request) => {
     const params = request.params as { paymentId: string };
     const paymentId = hash(params.paymentId, "PAYMENT_ID").text;
-    const providerChecks = await store.listProviderChecks(paymentId);
+    const providerChecks = options.providerRoutes?.store
+      ? await options.providerRoutes.store.listChecks(paymentId)
+      : await store.listProviderChecks(paymentId);
     const notes = providerChecks
       .map((check) => check.publicNote)
       .filter((note) => note.length > 0);
@@ -433,7 +460,44 @@ export function buildApp(options: GateOptions): FastifyInstance {
     };
   });
 
+  if (!process.env.VERCEL) {
+    app.post("/chain/deploy", async () => {
+      const { startProgramDeploy } = await import("./devnet.ts");
+      return { status: startProgramDeploy() };
+    });
+  }
+
+  app.post("/chain/mint", async (request) => {
+    const body = request.body as { owner?: string };
+    if (!body?.owner) throw new HttpError(400, "BAD_REQUEST");
+    try {
+      const { mintTestUsdc } = await import("./devnet.ts");
+      return { signature: await mintTestUsdc(body.owner) };
+    } catch (error) {
+      throw chainFailure(error);
+    }
+  });
+
+  app.post("/chain/verify", async (request) => {
+    const body = request.body as { paymentId?: string; artifact?: string };
+    if (!body?.paymentId || !body.artifact) throw new HttpError(400, "BAD_REQUEST");
+    try {
+      const { submitVerify } = await import("./devnet.ts");
+      return {
+        signature: await submitVerify(body.paymentId, Buffer.from(body.artifact, "base64")),
+      };
+    } catch (error) {
+      throw chainFailure(error);
+    }
+  });
+
   return app;
+}
+
+function chainFailure(error: unknown) {
+  const message = error instanceof Error ? error.message.split("\n")[0] : "CHAIN_NOT_READY";
+  if (message === "CHAIN_NOT_READY") return new HttpError(503, "CHAIN_NOT_READY");
+  return new HttpError(500, message.replace(/[^\w .:_-]/g, "").slice(0, 160) || "CHAIN_FAILED");
 }
 
 async function sign(
@@ -511,7 +575,7 @@ async function sign(
       buyer: input.fields.buyer.text,
       vendor: input.fields.vendor.text,
       amount: input.fields.amount,
-      decision: result.decision,
+      decision: result.decision as "allow" | "deny",
       kind: input.kind === KIND_FUND ? "fund" : "release",
       checksRun: input.evaluation.checksRun,
       checksFailed: input.evaluation.checksFailed,
@@ -572,7 +636,7 @@ function readPaymentFields(body: Record<string, unknown>): PaymentFields {
 }
 
 function fieldsFromPayment(
-  payment: NonNullable<ReturnType<typeof getPayment>>
+  payment: PaymentRow
 ): PaymentFields {
   return {
     mandateId: payment.mandateId,

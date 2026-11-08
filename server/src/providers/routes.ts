@@ -5,13 +5,8 @@ import { ApiError } from "../lib/api-error.ts";
 import type { Profile } from "../lib/repository.ts";
 import { requireProfile, requireRole } from "../middleware/dashboard.ts";
 import { randomUUID } from "node:crypto";
-import {
-  getIdentity,
-  insertLocalAudit,
-  insertWebhookEvent,
-  upsertIdentity,
-} from "../db.ts";
-import { ProviderHttpError } from "./http.ts";
+import { sqliteProviderStore, type ProviderStore } from "./store.ts";
+import { runProviderGate } from "./gate.ts";
 import type {
   IdentityVerificationProvider,
   SanctionsScreeningProvider,
@@ -20,7 +15,8 @@ import type {
 const pubkey = z.string().min(32).max(64);
 
 export type ProviderRouteDeps = {
-  db: DatabaseSync;
+  db?: DatabaseSync;
+  store?: ProviderStore;
   sanctions: SanctionsScreeningProvider;
   identity: IdentityVerificationProvider;
   environment: string;
@@ -36,16 +32,37 @@ export type ProviderRouteDeps = {
     reasonCode: string;
   }) => Promise<void>;
   getDashboardUser?: (
-    token: string,
+    token: string
   ) => Promise<{ id: string; email: string } | null>;
   getProfile?: (userId: string) => Promise<Profile | null>;
 };
 
 export function registerProviderRoutes(
   app: FastifyInstance,
-  deps: ProviderRouteDeps,
+  deps: ProviderRouteDeps
 ): void {
   const now = () => deps.now?.() ?? Math.floor(Date.now() / 1000);
+  const store =
+    deps.store ?? (deps.db ? sqliteProviderStore(deps.db) : undefined);
+  if (!store) throw new Error("PROVIDER_STORAGE_UNAVAILABLE");
+
+  app.post("/vendors/:wallet/checks", async (request, reply) => {
+    const params = z.object({ wallet: pubkey }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: "VALIDATION" });
+    const paymentId = randomUUID().replaceAll("-", "").padEnd(64, "0");
+    try {
+      const result = await runProviderGate({
+        ...deps,
+        store,
+        vendor: params.data.wallet,
+        paymentId,
+        nowMs: now() * 1000,
+      });
+      return { ...result, paymentId };
+    } catch {
+      return reply.code(503).send({ error: "CHECK_UNAVAILABLE" });
+    }
+  });
 
   app.get("/health/providers", async () => {
     const sanctions = await deps.sanctions.health();
@@ -63,7 +80,7 @@ export function registerProviderRoutes(
       const params = z.object({ wallet: pubkey }).safeParse(request.params);
       if (!params.success) return reply.code(400).send({ error: "VALIDATION" });
       const session = await deps.identity.createSession(params.data.wallet);
-      upsertIdentity(deps.db, {
+      await store.saveIdentity({
         vendorWallet: params.data.wallet,
         provider: "didit",
         sessionId: session.sessionId,
@@ -84,7 +101,7 @@ export function registerProviderRoutes(
       { parseAs: "buffer" },
       (_request, body, done) => {
         done(null, body);
-      },
+      }
     );
     scope.post("/webhooks/didit", async (request, reply) => {
       const raw = Buffer.isBuffer(request.body)
@@ -92,7 +109,10 @@ export function registerProviderRoutes(
         : Buffer.from(request.body as Uint8Array);
       const verdict = deps.identity.parseWebhook(request.headers, raw, now());
       if (!verdict.ok) return reply.code(401).send({ error: verdict.code });
-      const fresh = insertWebhookEvent(deps.db, {
+      const current = await store.getIdentity(verdict.vendorWallet);
+      if (!current || current.sessionId !== verdict.sessionId)
+        return reply.code(401).send({ error: "SESSION_MISMATCH" });
+      const fresh = await store.insertEvent({
         id: verdict.eventId,
         provider: "didit",
         sessionId: verdict.sessionId,
@@ -105,7 +125,7 @@ export function registerProviderRoutes(
         status: verdict.status,
         wallet: verdict.vendorWallet,
       };
-      insertLocalAudit(deps.db, {
+      await store.insertAudit({
         id: randomUUID(),
         actorType: "system",
         actorId: "didit",
@@ -115,14 +135,13 @@ export function registerProviderRoutes(
         createdAt: new Date(now() * 1000).toISOString(),
       });
       await deps.audit?.(outcome);
-      const current = getIdentity(deps.db, verdict.vendorWallet);
       if (
         current?.sessionId === verdict.sessionId &&
         current.status === verdict.status
       ) {
         return { ok: true, idempotent: true };
       }
-      upsertIdentity(deps.db, {
+      await store.saveIdentity({
         vendorWallet: verdict.vendorWallet,
         provider: "didit",
         sessionId: verdict.sessionId,
@@ -146,13 +165,7 @@ async function reach(run: () => Promise<unknown>): Promise<boolean> {
   try {
     await run();
     return true;
-  } catch (error) {
-    if (
-      error instanceof ProviderHttpError &&
-      (error.code === "HTTP" || error.code === "MALFORMED")
-    ) {
-      return true;
-    }
+  } catch {
     return false;
   }
 }

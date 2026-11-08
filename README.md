@@ -13,11 +13,29 @@ npm install   # Builds program and generates client automatically
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173), connect your wallet, and interact with the vault on devnet.
+Open [http://localhost:5173](http://localhost:5173), connect Phantom, and interact with the vault on devnet.
+
+## Phantom
+
+The dashboard connects only to a wallet whose name is `Phantom`, through the Wallet Standard support already in `@solana/client`. Owner transactions are signed with `solana:signTransaction` and then submitted by this app to `https://api.devnet.solana.com`. The wallet is not asked to send the transaction, so Phantom's selected network cannot move it to mainnet.
+
+On startup the app calls `getGenesisHash` and continues only when the result is Solana devnet's genesis hash, `EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG`.
+
+Pages used:
+
+- [Phantom Wallet Standard](https://docs.phantom.com/developer-powertools/wallet-standard)
+- [Phantom testnet mode](https://docs.phantom.com/developer-powertools/testnet-mode) (Settings, Developer Settings, Testnet Mode)
+- [Sign a message](https://docs.phantom.com/solana/signing-a-message)
+- [Detect the provider](https://docs.phantom.com/solana/detecting-the-provider) (install link `https://phantom.com/`)
+- [Send a Solana transaction](https://docs.phantom.com/recipes/transactions/send-solana-v1-transaction) (sign, then the app submits; Leash stays on version 0)
+- [Wallet Standard Solana features](https://github.com/wallet-standard/wallet-standard/blob/master/extensions/solana.md)
+- [Solana `getGenesisHash`](https://solana.com/docs/rpc/http/getgenesishash)
+- [Solana devnet genesis hash](https://github.com/solana-labs/solana/blob/master/sdk/src/genesis_config.rs) (`ClusterType::Devnet`)
+- [Solana clusters](https://solana.com/docs/references/clusters) (`https://api.devnet.solana.com`)
 
 ## What's Included
 
-- **Wallet connection** via `@solana/react-hooks` with auto-discovery
+- **Wallet connection** via `@solana/react-hooks`, limited to Phantom on devnet
 - **SOL Vault program** - deposit and withdraw SOL from a personal PDA vault
 - **Codama-generated client** - type-safe program interactions using `@solana/kit`
 - **Tailwind CSS v4** with light/dark mode
@@ -152,6 +170,12 @@ Wallet screening uses the OFAC SDN Advanced XML export. It is a public file and 
 
 Didit identity sessions stay server-side. `DIDIT_API_KEY`, `DIDIT_WORKFLOW_ID`, and `DIDIT_WEBHOOK_SECRET` are required or the gate refuses to start. Sessions are created at `POST https://verification.didit.me/v3/session/` with `vendor_data` set to the vendor wallet.
 
+The local runtime (`npm run server`) and serverless runtime both enforce OFAC and Didit. The dashboard checks the selected vendor before wallet setup, and the server repeats checks before signing funding or release. Didit's current decision is fetched from `/v3/session/{id}/decision/` and must match the stored session and wallet. A missing session, incomplete verification, API outage, wallet mismatch, or failed evidence write cannot produce an allow. Cached approval alone is insufficient. The runtime disables `/demo/force-clearance`; provider bypasses exist only as explicit options in isolated unit fixtures.
+
+Apply `supabase/migrations/20261108080000_gate_provider_checks.sql` for provider evidence on Supabase. With history configured, local and serverless identity sessions/evidence use the same Supabase tables. `node scripts/check-live-providers.mjs` checks the configured Didit credentials/workflow and OFAC list without creating paid verification sessions. The dashboard's **Verify selected vendor with Didit** button requires an owner login and opens the provider's session URL. Complete that verification before retrying payment. Demo vendor keys are generated for each page session; a reloaded page has new vendor wallets and needs new verification. Production vendors must use stable, registered payout wallets.
+
+Grey Market's local block is an additional demo policy rule. It is not evidence of an OFAC match. Provider evidence reports the real OFAC list result separately from Didit identity status and the local policy result.
+
 Pages read before writing this client:
 
 - [OFAC SDN Advanced XML](https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN_ADVANCED.XML)
@@ -206,6 +230,14 @@ Range is optional. It stays off unless `RANGE_API_KEY` is set, and the clearance
 - Every Range result, including an unavailable one, is cached for the life of the process so a small quota is not spent twice on the same address.
 
 ## Learn More
+
+### Cross-border routes and market conversion
+
+The payment form defaults to US → India and offers US → United Kingdom, Germany, and Philippines. These routes are seeded in the gate on startup without overwriting existing policy. Newly created mandates authorize those four routes; the selected route is included in the signed intent, clearance, funding instruction, and escrow. Release uses the funded payment's original route even if the form selection changes.
+
+`GET /fx/quote?currency=INR` (also GBP, EUR, PHP) fetches current USDC exchange rates from Coinbase's public exchange-rate API. The server caches a validated response for at most 60 seconds; the UI displays its fetch time and refreshes at expiry. Invalid data, provider failures, and unsupported currencies produce an unavailable state; expired rates are not reused. The displayed recipient-currency amount is an estimate, excludes conversion fees, and does not execute an FX trade or a fiat bank payout. Transfers remain in test USDC.
+
+`node scripts/seed-corridors.mjs` simulates the four on-chain route accounts and reports the rent/fees without signing. After approval, `node scripts/seed-corridors.mjs --send` initializes missing routes using the existing devnet program admin. Existing valid routes are skipped. Payment setup stops before wallet prompts while a selected on-chain route is missing.
 
 - [Solana Docs](https://solana.com/docs) - core concepts and guides
 - [Anchor Docs](https://www.anchor-lang.com/docs) - program development framework

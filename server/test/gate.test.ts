@@ -116,6 +116,19 @@ test("a revoked mandate, a blocked vendor, and a failed check do not consume the
   const screened = await blocked.fund();
   assert.equal(screened.json().decision, "deny");
   assert.equal(screened.json().reasons.includes("VENDOR_BLOCKED"), true);
+  assert.equal(Buffer.from(screened.json().message, "base64")[2], 0);
+  const screenedAgain = await blocked.fund({ paymentId: "22".repeat(32) });
+  assert.equal(screenedAgain.json().decision, "deny");
+  assert.equal(screenedAgain.json().reasons.includes("VENDOR_BLOCKED"), true);
+  // Repeated blocked requests must leave the entire two-payment budget available.
+  await blocked.request("/vendors", {
+    wallet: blocked.vendor,
+    name: "North Studio",
+    country: "US",
+    blocked: false,
+  });
+  assert.equal((await blocked.fund({ paymentId: "33".repeat(32) })).json().decision, "allow");
+  assert.equal((await blocked.fund({ paymentId: "44".repeat(32) })).json().decision, "allow");
 
   const budget = await setup();
   const first = await budget.fund({ amount: 150_000_000 });
@@ -238,6 +251,8 @@ async function setup() {
   const mint = nacl.sign.keyPair().publicKey;
   const mandate = nacl.sign.keyPair().publicKey;
   const app = buildApp({
+    allowWithoutProviders: true,
+    allowDemoOverrides: true,
     db: openDatabase(":memory:"),
     policy,
     verifier: nacl.sign.keyPair().publicKey,

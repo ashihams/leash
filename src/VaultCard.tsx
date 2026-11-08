@@ -1,9 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import {
-  useWalletConnection,
-  useSendTransaction,
-  useBalance,
-} from "@solana/react-hooks";
+import { useBalance, useWalletConnection } from "@solana/react-hooks";
 import {
   getProgramDerivedAddress,
   getAddressEncoder,
@@ -15,13 +11,15 @@ import {
   getWithdrawInstructionDataEncoder,
   VAULT_PROGRAM_ADDRESS,
 } from "./generated/vault";
+import { sendSignedByWallet } from "./leash/chain";
+import { describeWalletError, withWalletTimeout } from "./leash/wallet";
 
 const LAMPORTS_PER_SOL = 1_000_000_000n;
 const SYSTEM_PROGRAM_ADDRESS = "11111111111111111111111111111111" as Address;
 
 export function VaultCard() {
   const { wallet, status } = useWalletConnection();
-  const { send, isSending } = useSendTransaction();
+  const [isSending, setIsSending] = useState(false);
 
   const [amount, setAmount] = useState("");
   const [vaultAddress, setVaultAddress] = useState<Address | null>(null);
@@ -79,21 +77,29 @@ export function VaultCard() {
         }),
       };
 
+      if (!wallet?.signTransaction) {
+        setTxStatus("Connect Phantom to sign this deposit.");
+        return;
+      }
       setTxStatus("Awaiting signature...");
+      setIsSending(true);
+      const signTransaction = wallet.signTransaction;
+      const signature = await withWalletTimeout(
+        sendSignedByWallet(
+          (transaction) => signTransaction(transaction as never),
+          [instruction],
+          walletAddress,
+        ),
+      );
 
-      const signature = await send({
-        instructions: [instruction],
-      });
-
-      setTxStatus(`Deposited! Signature: ${signature?.slice(0, 20)}...`);
+      setTxStatus(`Deposited! Signature: ${signature.slice(0, 20)}...`);
       setAmount("");
     } catch (err) {
-      console.error("Deposit failed:", err);
-      setTxStatus(
-        `Error: ${err instanceof Error ? err.message : "Unknown error"}`
-      );
+      setTxStatus(describeWalletError(err));
+    } finally {
+      setIsSending(false);
     }
-  }, [walletAddress, vaultAddress, amount, send]);
+  }, [wallet, walletAddress, vaultAddress, amount]);
 
   const handleWithdraw = useCallback(async () => {
     if (!walletAddress || !vaultAddress) return;
@@ -112,20 +118,28 @@ export function VaultCard() {
         data: getWithdrawInstructionDataEncoder().encode({}),
       };
 
+      if (!wallet?.signTransaction) {
+        setTxStatus("Connect Phantom to sign this withdrawal.");
+        return;
+      }
       setTxStatus("Awaiting signature...");
-
-      const signature = await send({
-        instructions: [instruction],
-      });
-
-      setTxStatus(`Withdrawn! Signature: ${signature?.slice(0, 20)}...`);
-    } catch (err) {
-      console.error("Withdraw failed:", err);
-      setTxStatus(
-        `Error: ${err instanceof Error ? err.message : "Unknown error"}`
+      setIsSending(true);
+      const signTransaction = wallet.signTransaction;
+      const signature = await withWalletTimeout(
+        sendSignedByWallet(
+          (transaction) => signTransaction(transaction as never),
+          [instruction],
+          walletAddress,
+        ),
       );
+
+      setTxStatus(`Withdrawn! Signature: ${signature.slice(0, 20)}...`);
+    } catch (err) {
+      setTxStatus(describeWalletError(err));
+    } finally {
+      setIsSending(false);
     }
-  }, [walletAddress, vaultAddress, send]);
+  }, [wallet, walletAddress, vaultAddress]);
 
   if (status !== "connected") {
     return (
@@ -133,7 +147,7 @@ export function VaultCard() {
         <div className="space-y-1">
           <p className="text-lg font-semibold">SOL Vault</p>
           <p className="text-sm text-muted">
-            Connect your wallet to interact with the vault program.
+            Connect Phantom to interact with the vault program. The demo owner key is separate and is not your wallet.
           </p>
         </div>
         <div className="rounded-lg bg-cream/50 p-4 text-center text-sm text-muted">

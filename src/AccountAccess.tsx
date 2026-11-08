@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { WalletSession } from "@solana/client";
 import bs58 from "bs58";
 import { supabase } from "./lib/supabase";
+import { describeWalletError, withWalletTimeout } from "./leash/wallet";
 
 const GATE = import.meta.env.VITE_GATE_URL ?? "/gate";
 const SIGN_IN_STATEMENT = "Sign in to Leash. This does not move funds or approve a payment.";
@@ -39,7 +40,7 @@ export function AccountAccess({ wallet }: { wallet?: WalletSession }) {
     } catch (error) {
       setNotice({
         title: "Account",
-        detail: error instanceof Error ? error.message : "The request failed.",
+        detail: describeWalletError(error),
       });
     } finally {
       setBusy(false);
@@ -51,7 +52,7 @@ export function AccountAccess({ wallet }: { wallet?: WalletSession }) {
     if (!wallet?.signMessage) {
       setNotice({
         title: "Wallet",
-        detail: "Connect a Solana wallet that can sign a message first.",
+        detail: "Connect Phantom before signing a message. The demo owner key does not sign in.",
       });
       return;
     }
@@ -61,7 +62,10 @@ export function AccountAccess({ wallet }: { wallet?: WalletSession }) {
       statement: SIGN_IN_STATEMENT,
       wallet: {
         publicKey: { toBase58: () => address },
-        signMessage: (message) => wallet.signMessage?.(message),
+        signMessage: (message) => {
+          if (!wallet.signMessage) return Promise.reject(new Error("Connect Phantom before signing a message."));
+          return withWalletTimeout(wallet.signMessage(message));
+        },
       },
     });
     if (error) {
@@ -78,7 +82,7 @@ export function AccountAccess({ wallet }: { wallet?: WalletSession }) {
     if (!supabase || !wallet?.signMessage) {
       setNotice({
         title: "Wallet",
-        detail: "Sign in, then connect a wallet that can sign.",
+        detail: "Sign in, then connect Phantom.",
       });
       return;
     }
@@ -99,8 +103,8 @@ export function AccountAccess({ wallet }: { wallet?: WalletSession }) {
       setNotice({ title: "Challenge", detail: challenge.error });
       return;
     }
-    const signature = await wallet.signMessage(
-      new TextEncoder().encode(challenge.message),
+    const signature = await withWalletTimeout(
+      wallet.signMessage(new TextEncoder().encode(challenge.message)),
     );
     const verified = await gate("/auth/verify", {
       wallet: address,

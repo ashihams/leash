@@ -144,6 +144,35 @@ describe("identity status mapping", () => {
 });
 
 describe("provider gate over HTTP", () => {
+  it("fails closed without providers, on Didit outage, and on a mismatched session wallet", async () => {
+    for (const options of [{ noProviders: true }, { diditUnavailable: true }, { wrongWallet: true }]) {
+      const result = await fundWith(options);
+      expect(result.statusCode).toBe(503);
+      expect(result.json().error).toBe("CHECK_UNAVAILABLE");
+      expect(result.json().instructionData).toBeUndefined();
+      const override = await result.world.app.inject({ method: "POST", url: "/demo/force-clearance", payload: {} });
+      expect(override.statusCode).toBe(403);
+    }
+  });
+
+  it("uses Didit's live decision instead of an old stored approval", async () => {
+    const result = await fundWith({ identityStatus: "Approved", liveStatus: "Declined" });
+    expect(result.json().decision).toBe("deny");
+    expect(result.json().reasons).toContain("VENDOR_CREDENTIAL_INVALID");
+    const evidence = await result.world.app.inject({ method: "GET", url: `/evidence/${result.world.paymentId}` });
+    expect(evidence.json().providerChecks).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "didit", status: "fail" })]));
+  });
+
+  it("rechecks Didit before release if a previously approved vendor is declined", async () => {
+    const result = await fundWith();
+    expect(result.json().decision).toBe("allow");
+    result.world.setLiveStatus("Declined");
+    const release = await result.world.app.inject({ method: "POST", url: "/clearances/release", payload: { paymentId: result.world.paymentId } });
+    expect(release.statusCode).toBe(409);
+    expect(release.json().error).toBe("VENDOR_CREDENTIAL_INVALID");
+    expect(release.json().instructionData).toBeUndefined();
+  });
+
   it("denies a listed wallet, records a clean OFAC result, and denies when the list is unavailable", async () => {
     const listed = await fundWith({ screening: "listed" });
     expect(listed.statusCode).toBe(200);
@@ -201,6 +230,15 @@ describe("provider gate over HTTP", () => {
 });
 
 describe("didit webhooks", () => {
+  it("rejects a validly signed webhook for a different stored session", async () => {
+    const world = webhookApp();
+    const wallet = otherSolana();
+    upsertIdentity(world.db, { vendorWallet: wallet, provider: "didit", sessionId: "registered-session", status: "Not Started", expiresAt: null, updatedAt: new Date(NOW * 1000).toISOString() });
+    const body = bodyOf("wrong-session", wallet, "Approved");
+    const response = await world.inject(body, signedHeaders(body, SECRET));
+    expect(response.statusCode).toBe(401);
+    expect(response.json().error).toBe("SESSION_MISMATCH");
+  });
   it("rejects unsigned, invalid, modified, replayed, and stale events", async () => {
     const world = webhookApp();
     const wallet = encodeBase58(nacl.sign.keyPair().publicKey);
@@ -372,6 +410,10 @@ function json(status: number, body: unknown): Response {
 
 async function fundWith(
   options: {
+    noProviders?: boolean;
+    liveStatus?: string;
+    diditUnavailable?: boolean;
+    wrongWallet?: boolean;
     identityStatus?: string;
     screening?: "clean" | "listed" | "stale" | "empty";
     enqueue?: (entry: {
@@ -407,7 +449,10 @@ async function fundWith(
         : new Date(NOW * 1000).toISOString();
     sanctions.load(snapshot([listed], retrievedAt));
   }
-  const identity = new DiditIdentity("key", "workflow", SECRET);
+  let liveStatus = options.liveStatus ?? options.identityStatus ?? "Approved";
+  const identity = new DiditIdentity("key", "workflow", SECRET, (async () => json(options.diditUnavailable ? 503 : 200, {
+    session_id: "sess-fund", vendor_data: options.wrongWallet ? otherSolana() : vendorWallet, workflow_id: "workflow", status: liveStatus,
+  })) as typeof fetch);
   const app = buildApp({
     db,
     policy,
@@ -415,7 +460,7 @@ async function fundWith(
     mint: encodeBase58(mint),
     policyVersion: 1,
     now: () => NOW,
-    providerRoutes: {
+    providerRoutes: options.noProviders ? undefined : {
       db,
       sanctions,
       identity,
@@ -502,7 +547,7 @@ async function fundWith(
       ).toString("base64"),
     },
   });
-  return { statusCode: response.statusCode, json: () => response.json(), world: { app, paymentId } };
+  return { statusCode: response.statusCode, json: () => response.json(), world: { app, paymentId, setLiveStatus(status: string) { liveStatus = status; } } };
 }
 
 function webhookApp() {
@@ -527,6 +572,11 @@ function webhookApp() {
   return {
     db,
     inject(payload: Buffer, headers: Record<string, string>) {
+      let fixture: { vendor_data: string; session_id: string } | undefined;
+      try { fixture = JSON.parse(payload.toString()); } catch { /* Deliberately malformed webhook fixture. */ }
+      if (fixture && !db.prepare("select 1 from identity_verifications where vendor_wallet = ?").get(fixture.vendor_data)) {
+        upsertIdentity(db, { vendorWallet: fixture.vendor_data, provider: "didit", sessionId: fixture.session_id, status: "Not Started", expiresAt: null, updatedAt: new Date(NOW * 1000).toISOString() });
+      }
       return app.inject({
         method: "POST",
         url: "/webhooks/didit",

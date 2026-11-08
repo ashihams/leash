@@ -15,6 +15,7 @@ import { registerHistoryRoutes } from "./routes/history.ts";
 import { assertProviderConfig } from "./providers/config.ts";
 import { createSupabaseOfacStore, OfacSdnProvider } from "./providers/ofac.ts";
 import { DiditIdentity } from "./providers/identity.ts";
+import { supabaseProviderStore } from "./providers/store.ts";
 
 const dataDir = fileURLToPath(new URL("../data/", import.meta.url));
 mkdirSync(dataDir, { recursive: true });
@@ -62,6 +63,7 @@ const app = buildApp({
   policyVersion,
   providerRoutes: {
     db,
+    store: history ? supabaseProviderStore(history.supabase) : undefined,
     sanctions,
     identity,
     environment: process.env.DIDIT_ENVIRONMENT === "sandbox" ? "sandbox" : "live",
