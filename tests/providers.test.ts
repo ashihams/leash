@@ -16,9 +16,14 @@ import {
   versionsToDrop,
   type OfacSnapshot,
 } from "../server/src/providers/ofac.ts";
-import { interpretRange, RangeSanctions } from "../server/src/providers/range.ts";
-import { DiditIdentity, identityCheck } from "../server/src/providers/identity.ts";
-import type { Profile } from "../server/src/lib/repository.ts";
+import {
+  interpretRange,
+  RangeSanctions,
+} from "../server/src/providers/range.ts";
+import {
+  DiditIdentity,
+  identityCheck,
+} from "../server/src/providers/identity.ts";
 
 const NOW = 1_700_000_000;
 const PAYMENT = 100_000_000;
@@ -36,12 +41,21 @@ describe("OFAC SDN screener", () => {
           entryId: "10",
           program: "SDGT",
         },
-        { symbol: "XBT", address: "bc1qExampleAddress", entryId: "11", program: "CYBER2" },
-      ]),
+        {
+          symbol: "XBT",
+          address: "bc1qExampleAddress",
+          entryId: "11",
+          program: "CYBER2",
+        },
+      ])
     );
-    expect(rows.map((row) => row.currencySymbol).sort()).toEqual(["ETH", "SOL", "XBT"]);
+    expect(rows.map((row) => row.currencySymbol).sort()).toEqual([
+      "ETH",
+      "SOL",
+      "XBT",
+    ]);
     expect(rows.find((row) => row.currencySymbol === "ETH")?.address).toBe(
-      "0xabcdef0000000000000000000000000000000001",
+      "0xabcdef0000000000000000000000000000000001"
     );
     expect(rows.find((row) => row.currencySymbol === "SOL")).toMatchObject({
       address: SOLANA,
@@ -49,7 +63,7 @@ describe("OFAC SDN screener", () => {
       programs: ["SDGT"],
     });
     expect(rows.find((row) => row.currencySymbol === "XBT")?.address).toBe(
-      "bc1qExampleAddress",
+      "bc1qExampleAddress"
     );
   });
 
@@ -67,27 +81,46 @@ describe("OFAC SDN screener", () => {
     expect(clean.listed).toBe(false);
     expect(clean.raw).toMatchObject({
       source: "OFAC SDN",
-      statement: ofacNoMatchStatement(new Date(NOW * 1000).toISOString(), "abc"),
+      statement: ofacNoMatchStatement(
+        new Date(NOW * 1000).toISOString(),
+        "abc"
+      ),
     });
   });
 
   it("rejects an invalid address, an empty list, a stale list, and a hash mismatch", async () => {
     const provider = new OfacSdnProvider(() => NOW * 1000);
-    await expect(provider.screenWallet("not-a-solana-address")).rejects.toMatchObject({
+    await expect(
+      provider.screenWallet("not-a-solana-address")
+    ).rejects.toMatchObject({
       code: "PARAMS_INVALID",
     });
-    await expect(provider.screenWallet(`0x${"ab".repeat(20)}`)).rejects.toMatchObject({
+    await expect(
+      provider.screenWallet(`0x${"ab".repeat(20)}`)
+    ).rejects.toMatchObject({
       code: "PARAMS_INVALID",
     });
     expect(() =>
-      provider.load({ ...snapshot([SOLANA]), addresses: [], addressCount: 0, solAddressCount: 0 }),
+      provider.load({
+        ...snapshot([SOLANA]),
+        addresses: [],
+        addressCount: 0,
+        solAddressCount: 0,
+      })
     ).toThrow(OfacScreenError);
     const stale = new OfacSdnProvider(() => NOW * 1000);
     stale.load(
-      snapshot([SOLANA], new Date(NOW * 1000 - 73 * 60 * 60 * 1000).toISOString()),
+      snapshot(
+        [SOLANA],
+        new Date(NOW * 1000 - 73 * 60 * 60 * 1000).toISOString()
+      )
     );
-    await expect(stale.screenWallet(SOLANA)).rejects.toMatchObject({ code: "LIST_STALE" });
-    const xml = sdnXml([{ symbol: "SOL", address: SOLANA, entryId: "10", program: "SDGT" }]);
+    await expect(stale.screenWallet(SOLANA)).rejects.toMatchObject({
+      code: "LIST_STALE",
+    });
+    const xml = sdnXml([
+      { symbol: "SOL", address: SOLANA, entryId: "10", program: "SDGT" },
+    ]);
     await expect(
       downloadOfacSnapshot({
         fetchImpl: async () =>
@@ -96,14 +129,13 @@ describe("OFAC SDN screener", () => {
             headers: { digest: `sha-256${"ab".repeat(32)}` },
           }),
         retrievedAt: new Date(NOW * 1000).toISOString(),
-      }),
+      })
     ).rejects.toMatchObject({ code: "HASH_MISMATCH" });
     await expect(
       downloadOfacSnapshot({
-        fetchImpl: async () =>
-          new Response(sdnXml([]), { status: 200 }),
+        fetchImpl: async () => new Response(sdnXml([]), { status: 200 }),
         retrievedAt: new Date(NOW * 1000).toISOString(),
-      }),
+      })
     ).rejects.toMatchObject({ code: "EMPTY_LIST" });
     expect(versionsToDrop(["4", "3", "2", "1"])).toEqual(["1"]);
   });
@@ -117,60 +149,76 @@ describe("identity status mapping", () => {
       reasonCode: "VENDOR_NOT_REGISTERED",
     });
     expect(
-      identityCheck({ record: { status: "Approved", expiresAt: null }, nowMs }),
+      identityCheck({ record: { status: "Approved", expiresAt: null }, nowMs })
     ).toEqual({ status: "pass", reasonCode: "" });
     expect(
-      identityCheck({ record: { status: "In Review", expiresAt: null }, nowMs }),
+      identityCheck({ record: { status: "In Review", expiresAt: null }, nowMs })
     ).toEqual({ status: "flag", reasonCode: "REVIEW_STARTED" });
     expect(
-      identityCheck({ record: { status: "Declined", expiresAt: null }, nowMs }),
+      identityCheck({ record: { status: "Declined", expiresAt: null }, nowMs })
     ).toEqual({ status: "fail", reasonCode: "VENDOR_CREDENTIAL_INVALID" });
     expect(
       identityCheck({
         record: { status: "Kyc Expired", expiresAt: null },
         nowMs,
-      }),
+      })
     ).toEqual({ status: "fail", reasonCode: "VENDOR_CREDENTIAL_EXPIRED" });
     expect(
       identityCheck({
         record: { status: "Approved", expiresAt: "2000-01-01T00:00:00.000Z" },
         nowMs,
-      }),
+      })
     ).toEqual({ status: "fail", reasonCode: "VENDOR_CREDENTIAL_EXPIRED" });
     expect(
-      identityCheck({ record: { status: "Not Started", expiresAt: null }, nowMs }),
+      identityCheck({
+        record: { status: "Not Started", expiresAt: null },
+        nowMs,
+      })
     ).toEqual({ status: "flag", reasonCode: "SESSION_OPEN" });
   });
 });
 
 describe("provider gate over HTTP", () => {
-  it("fails closed without providers, on Didit outage, and on a mismatched session wallet", async () => {
-    for (const options of [{ noProviders: true }, { diditUnavailable: true }, { wrongWallet: true }]) {
+  it("fails closed without OFAC and does not require Didit for mock vendors", async () => {
+    const missing = await fundWith({ noProviders: true });
+    expect(missing.statusCode).toBe(503);
+    expect(missing.json().error).toBe("CHECK_UNAVAILABLE");
+    for (const options of [
+      { diditUnavailable: true },
+      { wrongWallet: true },
+      { liveStatus: "Declined" },
+    ]) {
       const result = await fundWith(options);
-      expect(result.statusCode).toBe(503);
-      expect(result.json().error).toBe("CHECK_UNAVAILABLE");
-      expect(result.json().instructionData).toBeUndefined();
-      const override = await result.world.app.inject({ method: "POST", url: "/demo/force-clearance", payload: {} });
-      expect(override.statusCode).toBe(403);
+      expect(result.statusCode).toBe(200);
+      expect(result.json().decision).toBe("allow");
     }
   });
 
-  it("uses Didit's live decision instead of an old stored approval", async () => {
-    const result = await fundWith({ identityStatus: "Approved", liveStatus: "Declined" });
-    expect(result.json().decision).toBe("deny");
-    expect(result.json().reasons).toContain("VENDOR_CREDENTIAL_INVALID");
-    const evidence = await result.world.app.inject({ method: "GET", url: `/evidence/${result.world.paymentId}` });
-    expect(evidence.json().providerChecks).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "didit", status: "fail" })]));
+  it("does not include Didit results in vendor clearance evidence", async () => {
+    const result = await fundWith({
+      identityStatus: "Approved",
+      liveStatus: "Declined",
+    });
+    expect(result.json().decision).toBe("allow");
+    const evidence = await result.world.app.inject({
+      method: "GET",
+      url: `/evidence/${result.world.paymentId}`,
+    });
+    expect(
+      evidence
+        .json()
+        .providerChecks.some(
+          (check: { provider: string }) => check.provider === "didit"
+        )
+    ).toBe(false);
   });
 
-  it("rechecks Didit before release if a previously approved vendor is declined", async () => {
-    const result = await fundWith();
+  it("keeps the vendor result independent of Didit status", async () => {
+    const result = await fundWith({
+      identityStatus: "Approved",
+      liveStatus: "Declined",
+    });
     expect(result.json().decision).toBe("allow");
-    result.world.setLiveStatus("Declined");
-    const release = await result.world.app.inject({ method: "POST", url: "/clearances/release", payload: { paymentId: result.world.paymentId } });
-    expect(release.statusCode).toBe(409);
-    expect(release.json().error).toBe("VENDOR_CREDENTIAL_INVALID");
-    expect(release.json().instructionData).toBeUndefined();
   });
 
   it("denies a listed wallet, records a clean OFAC result, and denies when the list is unavailable", async () => {
@@ -196,25 +244,17 @@ describe("provider gate over HTTP", () => {
       url: `/evidence/${clean.world.paymentId}`,
     });
     expect(evidence.json().notes[0]).toContain(
-      "No match on the OFAC SDN list (US Treasury), retrieved",
+      "No match on the OFAC SDN list (US Treasury), retrieved"
     );
     expect(evidence.json().notes[0]).toContain(
-      "OFAC states its digital currency address listings are not exhaustive. EU, UN and other lists are not covered.",
+      "OFAC states its digital currency address listings are not exhaustive. EU, UN and other lists are not covered."
     );
 
-    const review: Array<{ reasonCode: string }> = [];
     const flagged = await fundWith({
       screening: "clean",
       identityStatus: "In Review",
-      enqueue: async (entry) => {
-        review.push(entry);
-      },
     });
-    expect(flagged.json().decision).toBe("deny");
-    expect(flagged.json().reasons).toContain("REVIEW_STARTED");
-    expect(review).toEqual([
-      expect.objectContaining({ reasonCode: "REVIEW_STARTED" }),
-    ]);
+    expect(flagged.json().decision).toBe("allow");
 
     const stale = await fundWith({ screening: "stale" });
     expect(stale.statusCode).toBe(503);
@@ -233,7 +273,14 @@ describe("didit webhooks", () => {
   it("rejects a validly signed webhook for a different stored session", async () => {
     const world = webhookApp();
     const wallet = otherSolana();
-    upsertIdentity(world.db, { vendorWallet: wallet, provider: "didit", sessionId: "registered-session", status: "Not Started", expiresAt: null, updatedAt: new Date(NOW * 1000).toISOString() });
+    upsertIdentity(world.db, {
+      vendorWallet: wallet,
+      provider: "didit",
+      sessionId: "registered-session",
+      status: "Not Started",
+      expiresAt: null,
+      updatedAt: new Date(NOW * 1000).toISOString(),
+    });
     const body = bodyOf("wrong-session", wallet, "Approved");
     const response = await world.inject(body, signedHeaders(body, SECRET));
     expect(response.statusCode).toBe(401);
@@ -242,20 +289,27 @@ describe("didit webhooks", () => {
   it("rejects unsigned, invalid, modified, replayed, and stale events", async () => {
     const world = webhookApp();
     const wallet = encodeBase58(nacl.sign.keyPair().publicKey);
-    const unsigned = await world.inject(bodyOf("evt-unsigned", wallet, "Approved"), {});
+    const unsigned = await world.inject(
+      bodyOf("evt-unsigned", wallet, "Approved"),
+      {}
+    );
     expect(unsigned.statusCode).toBe(401);
 
     const invalid = await world.inject(
       bodyOf("evt-bad", wallet, "Approved"),
-      signedHeaders(bodyOf("evt-bad", wallet, "Approved"), "wrong-secret"),
+      signedHeaders(bodyOf("evt-bad", wallet, "Approved"), "wrong-secret")
     );
     expect(invalid.statusCode).toBe(401);
     expect(invalid.json().error).toBe("SIGNATURE_INVALID");
 
     const original = bodyOf("evt-mod", wallet, "Approved");
     const modified = Buffer.from(original);
-    modified[modified.length - 2] = modified[modified.length - 2] === 65 ? 66 : 65;
-    const changed = await world.inject(modified, signedHeaders(original, SECRET));
+    modified[modified.length - 2] =
+      modified[modified.length - 2] === 65 ? 66 : 65;
+    const changed = await world.inject(
+      modified,
+      signedHeaders(original, SECRET)
+    );
     expect(changed.statusCode).toBe(401);
 
     const staleBody = bodyOf("evt-stale", wallet, "Approved");
@@ -277,13 +331,17 @@ describe("didit webhooks", () => {
     expect(repeated.statusCode).toBe(200);
     expect(repeated.json().idempotent).toBe(true);
     const stored = world.db
-      .prepare("select status from identity_verifications where vendor_wallet = ?")
+      .prepare(
+        "select status from identity_verifications where vendor_wallet = ?"
+      )
       .get(wallet) as { status: string };
     expect(stored.status).toBe("Approved");
     const audit = world.db
       .prepare("select details from audit_log")
       .all() as Array<{ details: string }>;
-    expect(audit.some((row) => row.details.includes("Should Not Store"))).toBe(false);
+    expect(audit.some((row) => row.details.includes("Should Not Store"))).toBe(
+      false
+    );
   });
 
   it("stores each terminal status without provider personal data", async () => {
@@ -295,7 +353,7 @@ describe("didit webhooks", () => {
       expect(response.statusCode).toBe(200);
       const row = world.db
         .prepare(
-          "select status, vendor_wallet, session_id, expires_at from identity_verifications",
+          "select status, vendor_wallet, session_id, expires_at from identity_verifications"
         )
         .get() as {
         status: string;
@@ -313,7 +371,7 @@ describe("didit webhooks", () => {
   });
 });
 
-describe("startup and owner session route", () => {
+describe("startup and vendor verification route", () => {
   it("refuses missing provider config", () => {
     try {
       assertProviderConfig({});
@@ -326,39 +384,29 @@ describe("startup and owner session route", () => {
         "DIDIT_WEBHOOK_SECRET",
       ]);
     }
-    const child = spawnSync(
-      process.execPath,
-      ["server/src/index.ts"],
-      {
-        cwd: process.cwd(),
-        encoding: "utf8",
-        timeout: 15_000,
-        env: {
-          ...process.env,
-          LEASH_USDC_MINT: "mint",
-          DIDIT_API_KEY: "",
-          DIDIT_WORKFLOW_ID: "",
-          DIDIT_WEBHOOK_SECRET: "",
-        },
+    const child = spawnSync(process.execPath, ["server/src/index.ts"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        LEASH_USDC_MINT: "mint",
+        DIDIT_API_KEY: "",
+        DIDIT_WORKFLOW_ID: "",
+        DIDIT_WEBHOOK_SECRET: "",
       },
-    );
+    });
     expect(child.status).toBe(1);
     expect(`${child.stdout}${child.stderr}`).toContain("Refusing to start");
     expect(`${child.stdout}${child.stderr}`).not.toContain(SECRET);
   });
 
-  it("creates a verification session for an owner", async () => {
+  it("does not expose the vendor Didit route", async () => {
     const db = openDatabase(":memory:");
     const identity = new DiditIdentity(
       "key",
       "11111111-1111-1111-1111-111111111111",
-      SECRET,
-      (async () =>
-        json(200, {
-          session_id: "sess-new",
-          url: "https://verify.didit.me/session/sess-new",
-          status: "Not Started",
-        })) as typeof fetch,
+      SECRET
     );
     const sanctions = new OfacSdnProvider();
     const app = buildApp({
@@ -373,8 +421,6 @@ describe("startup and owner session route", () => {
         sanctions,
         identity,
         environment: "sandbox",
-        getDashboardUser: async () => ({ id: "owner-1", email: "owner@leash.local" }),
-        getProfile: async () => ownerProfile(),
       },
     });
     const wallet = encodeBase58(nacl.sign.keyPair().publicKey);
@@ -382,18 +428,7 @@ describe("startup and owner session route", () => {
       method: "POST",
       url: `/vendors/${wallet}/verification`,
     });
-    expect(denied.statusCode).toBe(401);
-    const created = await app.inject({
-      method: "POST",
-      url: `/vendors/${wallet}/verification`,
-      headers: { authorization: "Bearer dashboard-token" },
-    });
-    expect(created.statusCode).toBe(200);
-    expect(created.json().url).toBe("https://verify.didit.me/session/sess-new");
-    const row = db
-      .prepare("select status, session_id from identity_verifications")
-      .get() as { status: string; session_id: string };
-    expect(row).toEqual({ status: "Not Started", session_id: "sess-new" });
+    expect(denied.statusCode).toBe(404);
   });
 });
 
@@ -421,7 +456,7 @@ async function fundWith(
       wallet: string;
       reasonCode: string;
     }) => Promise<void>;
-  } = {},
+  } = {}
 ) {
   const policy = nacl.sign.keyPair();
   const owner = nacl.sign.keyPair();
@@ -441,7 +476,11 @@ async function fundWith(
   });
   const sanctions = new OfacSdnProvider(() => NOW * 1000);
   const screening = options.screening ?? "clean";
-  if (screening === "listed" || screening === "clean" || screening === "stale") {
+  if (
+    screening === "listed" ||
+    screening === "clean" ||
+    screening === "stale"
+  ) {
     const listed = screening === "clean" ? otherSolana() : vendorWallet;
     const retrievedAt =
       screening === "stale"
@@ -450,9 +489,13 @@ async function fundWith(
     sanctions.load(snapshot([listed], retrievedAt));
   }
   let liveStatus = options.liveStatus ?? options.identityStatus ?? "Approved";
-  const identity = new DiditIdentity("key", "workflow", SECRET, (async () => json(options.diditUnavailable ? 503 : 200, {
-    session_id: "sess-fund", vendor_data: options.wrongWallet ? otherSolana() : vendorWallet, workflow_id: "workflow", status: liveStatus,
-  })) as typeof fetch);
+  const identity = new DiditIdentity("key", "workflow", SECRET, (async () =>
+    json(options.diditUnavailable ? 503 : 200, {
+      session_id: "sess-fund",
+      vendor_data: options.wrongWallet ? otherSolana() : vendorWallet,
+      workflow_id: "workflow",
+      status: liveStatus,
+    })) as typeof fetch);
   const app = buildApp({
     db,
     policy,
@@ -460,13 +503,15 @@ async function fundWith(
     mint: encodeBase58(mint),
     policyVersion: 1,
     now: () => NOW,
-    providerRoutes: options.noProviders ? undefined : {
-      db,
-      sanctions,
-      identity,
-      environment: "live",
-      enqueueReview: options.enqueue,
-    },
+    providerRoutes: options.noProviders
+      ? undefined
+      : {
+          db,
+          sanctions,
+          identity,
+          environment: "live",
+          enqueueReview: options.enqueue,
+        },
   });
   const buyer = encodeBase58(owner.publicKey);
   const mandateAccount = encodeBase58(mandate);
@@ -543,11 +588,21 @@ async function fundWith(
     payload: {
       ...payload,
       intentSignature: Buffer.from(
-        nacl.sign.detached(message, agent.secretKey),
+        nacl.sign.detached(message, agent.secretKey)
       ).toString("base64"),
     },
   });
-  return { statusCode: response.statusCode, json: () => response.json(), world: { app, paymentId, setLiveStatus(status: string) { liveStatus = status; } } };
+  return {
+    statusCode: response.statusCode,
+    json: () => response.json(),
+    world: {
+      app,
+      paymentId,
+      setLiveStatus(status: string) {
+        liveStatus = status;
+      },
+    },
+  };
 }
 
 function webhookApp() {
@@ -573,9 +628,27 @@ function webhookApp() {
     db,
     inject(payload: Buffer, headers: Record<string, string>) {
       let fixture: { vendor_data: string; session_id: string } | undefined;
-      try { fixture = JSON.parse(payload.toString()); } catch { /* Deliberately malformed webhook fixture. */ }
-      if (fixture && !db.prepare("select 1 from identity_verifications where vendor_wallet = ?").get(fixture.vendor_data)) {
-        upsertIdentity(db, { vendorWallet: fixture.vendor_data, provider: "didit", sessionId: fixture.session_id, status: "Not Started", expiresAt: null, updatedAt: new Date(NOW * 1000).toISOString() });
+      try {
+        fixture = JSON.parse(payload.toString());
+      } catch {
+        /* Deliberately malformed webhook fixture. */
+      }
+      if (
+        fixture &&
+        !db
+          .prepare(
+            "select 1 from identity_verifications where vendor_wallet = ?"
+          )
+          .get(fixture.vendor_data)
+      ) {
+        upsertIdentity(db, {
+          vendorWallet: fixture.vendor_data,
+          provider: "didit",
+          sessionId: fixture.session_id,
+          status: "Not Started",
+          expiresAt: null,
+          updatedAt: new Date(NOW * 1000).toISOString(),
+        });
       }
       return app.inject({
         method: "POST",
@@ -596,26 +669,22 @@ function bodyOf(eventId: string, wallet: string, status: string): Buffer {
       vendor_data: wallet,
       environment: "sandbox",
       decision: { name: "Should Not Store", document_number: "secret" },
-    }),
+    })
   );
 }
 
-function signedHeaders(payload: Buffer, secret: string): Record<string, string> {
+function signedHeaders(
+  payload: Buffer,
+  secret: string
+): Record<string, string> {
   const digest = createHmac("sha256", secret).update(payload).digest("hex");
   return { "x-signature": digest, "x-timestamp": String(NOW) };
 }
 
-function ownerProfile(): Profile {
-  return {
-    id: "owner-1",
-    email: "owner@leash.local",
-    role: "owner",
-    displayName: "Owner",
-    createdAt: "2026-01-01T00:00:00.000Z",
-  };
-}
-
-function snapshot(addresses: string[], retrievedAt = new Date(NOW * 1000).toISOString()): OfacSnapshot {
+function snapshot(
+  addresses: string[],
+  retrievedAt = new Date(NOW * 1000).toISOString()
+): OfacSnapshot {
   return {
     id: "version-1",
     retrievedAt,
@@ -635,7 +704,12 @@ function snapshot(addresses: string[], retrievedAt = new Date(NOW * 1000).toISOS
 }
 
 function sdnXml(
-  rows: Array<{ symbol: string; address: string; entryId: string; program: string }>,
+  rows: Array<{
+    symbol: string;
+    address: string;
+    entryId: string;
+    program: string;
+  }>
 ): string {
   const namespace =
     "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/ADVANCED_XML";
@@ -644,19 +718,19 @@ function sdnXml(
   const featureTypes = symbols
     .map(
       (symbol, index) =>
-        `<FeatureType ID="${index + 1}" FeatureTypeGroupID="1">Digital Currency Address - ${symbol}</FeatureType>`,
+        `<FeatureType ID="${index + 1}" FeatureTypeGroupID="1">Digital Currency Address - ${symbol}</FeatureType>`
     )
     .join("");
   const programValues = programs
     .map(
       (program, index) =>
-        `<SanctionsProgram ID="${index + 1}" SubsidiaryBodyID="1">${program}</SanctionsProgram>`,
+        `<SanctionsProgram ID="${index + 1}" SubsidiaryBodyID="1">${program}</SanctionsProgram>`
     )
     .join("");
   const legal = programs
     .map(
       (_program, index) =>
-        `<LegalBasis ID="${index + 1}" LegalBasisTypeID="1" SanctionsProgramID="${index + 1}">basis</LegalBasis>`,
+        `<LegalBasis ID="${index + 1}" LegalBasisTypeID="1" SanctionsProgramID="${index + 1}">basis</LegalBasis>`
     )
     .join("");
   const grouped = new Map<string, typeof rows>();
@@ -677,10 +751,10 @@ function sdnXml(
       .join("");
     const programId = programs.indexOf(group[0].program) + 1;
     parties.push(
-      `<DistinctParty FixedRef="${profileId}"><Profile ID="${profileId}" PartySubTypeID="1">${features}<SanctionsEntryReference SanctionsEntryID="${entryId}"/></Profile></DistinctParty>`,
+      `<DistinctParty FixedRef="${profileId}"><Profile ID="${profileId}" PartySubTypeID="1">${features}<SanctionsEntryReference SanctionsEntryID="${entryId}"/></Profile></DistinctParty>`
     );
     entries.push(
-      `<SanctionsEntry ID="${entryId}" ProfileID="${profileId}"><EntryEvent ID="1" EntryEventTypeID="1" LegalBasisID="${programId}"><Date CalendarTypeID="1"><Year>2020</Year><Month>1</Month><Day>1</Day></Date></EntryEvent></SanctionsEntry>`,
+      `<SanctionsEntry ID="${entryId}" ProfileID="${profileId}"><EntryEvent ID="1" EntryEventTypeID="1" LegalBasisID="${programId}"><Date CalendarTypeID="1"><Year>2020</Year><Month>1</Month><Day>1</Day></Date></EntryEvent></SanctionsEntry>`
     );
     profileId += 1;
   }
@@ -709,21 +783,21 @@ describe("optional Range check", () => {
         lists_checked: true,
         is_sanctioned: true,
         is_token_blacklisted: false,
-      }),
+      })
     ).toEqual({ status: "fail", reasonCode: "LIST_MATCH_WALLET" });
     expect(
       interpretRange(200, {
         lists_checked: true,
         is_sanctioned: false,
         is_token_blacklisted: true,
-      }),
+      })
     ).toEqual({ status: "fail", reasonCode: "LIST_MATCH_WALLET" });
     expect(
       interpretRange(200, {
         lists_checked: true,
         is_sanctioned: false,
         is_token_blacklisted: false,
-      }),
+      })
     ).toEqual({ status: "pass" });
   });
 });

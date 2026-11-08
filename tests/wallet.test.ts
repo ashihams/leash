@@ -18,7 +18,15 @@ import {
   withWalletTimeout,
 } from "../src/leash/wallet.ts";
 
-const SKIP = new Set(["node_modules", "dist", ".git", "target", ".anchor", "server/data", "api/generated"]);
+const SKIP = new Set([
+  "node_modules",
+  "dist",
+  ".git",
+  "target",
+  ".anchor",
+  "server/data",
+  "api/generated",
+]);
 
 function sourceFiles(dir: string): string[] {
   const found: string[] = [];
@@ -28,7 +36,8 @@ function sourceFiles(dir: string): string[] {
     if (path.replaceAll("\\", "/").endsWith("tests/wallet.test.ts")) continue;
     const info = statSync(path);
     if (info.isDirectory()) found.push(...sourceFiles(path));
-    else if (/\.(ts|tsx|js|mjs|cjs|md|json|example|css|html)$/.test(entry)) found.push(path);
+    else if (/\.(ts|tsx|js|mjs|cjs|md|json|example|css|html)$/.test(entry))
+      found.push(path);
   }
   return found;
 }
@@ -37,7 +46,9 @@ describe("wallet source", () => {
   it("has no MetaMask or Flask references in the source tree", () => {
     const hits = sourceFiles(process.cwd()).flatMap((path) => {
       const text = readFileSync(path, "utf8");
-      return /metamask|@metamask|metamask-connect|\bFlask\b/i.test(text) ? [path] : [];
+      return /metamask|@metamask|metamask-connect|\bFlask\b/i.test(text)
+        ? [path]
+        : [];
     });
     assert.deepEqual(hits, []);
   });
@@ -64,7 +75,7 @@ describe("wallet prompts", () => {
     assert.equal(WALLET_PROMPT_MS, 60_000);
     await assert.rejects(
       withWalletTimeout(new Promise(() => undefined), 20),
-      /timed out/,
+      /timed out/
     );
   });
 
@@ -78,26 +89,47 @@ describe("wallet prompts", () => {
 describe("devnet guard", () => {
   it("blocks transactions when the genesis hash is not devnet", () => {
     assert.equal(transactionsAllowed(DEVNET_GENESIS_HASH), true);
-    assert.equal(transactionsAllowed("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"), false);
-    assert.deepEqual(
-      transactionGuard({ genesis: "not-devnet", chains: [DEVNET_CHAIN], connected: true }),
-      { ok: false, reason: "rpc" },
+    assert.equal(
+      transactionsAllowed("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"),
+      false
     );
     assert.deepEqual(
-      transactionGuard({ genesis: DEVNET_GENESIS_HASH, chains: ["solana:mainnet"], connected: true }),
-      { ok: false, reason: "chain" },
+      transactionGuard({
+        genesis: "not-devnet",
+        chains: [DEVNET_CHAIN],
+        connected: true,
+      }),
+      { ok: false, reason: "rpc" }
     );
     assert.deepEqual(
-      transactionGuard({ genesis: DEVNET_GENESIS_HASH, chains: [], connected: false }),
-      { ok: true },
+      transactionGuard({
+        genesis: DEVNET_GENESIS_HASH,
+        chains: ["solana:mainnet"],
+        connected: true,
+      }),
+      { ok: false, reason: "chain" }
+    );
+    assert.deepEqual(
+      transactionGuard({
+        genesis: DEVNET_GENESIS_HASH,
+        chains: [],
+        connected: false,
+      }),
+      { ok: true }
     );
   });
 
   it("builds transactions only against the devnet connection", () => {
     assert.equal(DEVNET_RPC, "https://api.devnet.solana.com");
     assert.equal(explorerTx("sig").includes("cluster=devnet"), true);
-    const chain = readFileSync(join(process.cwd(), "src/leash/chain.ts"), "utf8");
-    const providers = readFileSync(join(process.cwd(), "src/providers.tsx"), "utf8");
+    const chain = readFileSync(
+      join(process.cwd(), "src/leash/chain.ts"),
+      "utf8"
+    );
+    const providers = readFileSync(
+      join(process.cwd(), "src/providers.tsx"),
+      "utf8"
+    );
     assert.equal(chain.includes("api.mainnet"), false);
     assert.equal(chain.includes("signAndSendTransaction"), false);
     assert.equal(providers.includes("api.mainnet"), false);

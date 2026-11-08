@@ -13,11 +13,17 @@ const provider = new OfacSdnProvider();
 provider.load(snapshot);
 provider.remember();
 if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
-  const client = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const client = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY,
+    {
+      auth: { persistSession: false, autoRefreshToken: false },
+    }
+  );
   await createSupabaseOfacStore(client).save(snapshot);
-  console.log("Stored the OFAC SDN address index. The latest 3 versions are kept.");
+  console.log(
+    "Stored the OFAC SDN address index. The latest 3 versions are kept."
+  );
 } else {
   console.log("Supabase is not configured. The index was saved locally only.");
 }

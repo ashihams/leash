@@ -4,12 +4,7 @@ export const RATIO_MAX = 0.2;
 export const RECENT_WINDOW_MS = 15 * 60 * 1000;
 
 export type HistoryStatus =
-  | "funded"
-  | "delivered"
-  | "verified"
-  | "released"
-  | "refunded"
-  | "disputed";
+  "funded" | "delivered" | "verified" | "released" | "refunded" | "disputed";
 
 export type HistoryPayment = {
   status: HistoryStatus;
@@ -29,7 +24,7 @@ export type VendorStats = {
 export function vendorStats(
   rows: readonly HistoryPayment[],
   screened: boolean,
-  nowMs: number,
+  nowMs: number
 ): VendorStats {
   const total = rows.length;
   const refunded = rows.filter((row) => row.status === "refunded").length;
@@ -65,7 +60,7 @@ export function expectedGateOutcome(stats: VendorStats): string {
 function copies(
   count: number,
   status: HistoryStatus,
-  createdAt: string,
+  createdAt: string
 ): HistoryPayment[] {
   return Array.from({ length: count }, () => ({ status, createdAt }));
 }
@@ -109,10 +104,7 @@ export function buildDemoHistory(nowMs: number): DemoVendorPlan[] {
       name: "Returnly",
       country: "US",
       screened: false,
-      payments: [
-        ...copies(5, "released", old),
-        ...copies(5, "refunded", old),
-      ],
+      payments: [...copies(5, "released", old), ...copies(5, "refunded", old)],
     },
     {
       key: "shadow",
@@ -125,7 +117,7 @@ export function buildDemoHistory(nowMs: number): DemoVendorPlan[] {
   return plans.map((plan) => ({
     ...plan,
     outcome: expectedGateOutcome(
-      vendorStats(plan.payments, plan.screened, nowMs),
+      vendorStats(plan.payments, plan.screened, nowMs)
     ),
   }));
 }

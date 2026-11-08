@@ -17,7 +17,7 @@ type FetchLike = typeof fetch;
 export async function providerRequest(
   url: string,
   init: RequestInit,
-  fetchImpl: FetchLike = fetch,
+  fetchImpl: FetchLike = fetch
 ): Promise<ProviderResponse> {
   let last: ProviderHttpError | null = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -48,7 +48,7 @@ export async function providerRequest(
       }
       const name = error instanceof Error ? error.name : "";
       last = new ProviderHttpError(
-        name === "TimeoutError" || name === "AbortError" ? "TIMEOUT" : "NETWORK",
+        name === "TimeoutError" || name === "AbortError" ? "TIMEOUT" : "NETWORK"
       );
     }
   }

@@ -9,7 +9,7 @@ const saved = JSON.parse(readFileSync("keys/demo.json", "utf8")) as {
 const identity = new DiditIdentity(
   config.diditKey,
   config.diditWorkflowId,
-  config.diditWebhookSecret,
+  config.diditWebhookSecret
 );
 
 for (const [name, key] of Object.entries(saved.vendors)) {

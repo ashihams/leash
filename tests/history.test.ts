@@ -27,7 +27,7 @@ async function post(
   app: Awaited<ReturnType<typeof buildHistoryApp>>,
   url: string,
   body: unknown,
-  headers: Record<string, string> = {},
+  headers: Record<string, string> = {}
 ) {
   const response = await app.inject({
     method: "POST",
@@ -141,7 +141,7 @@ describe("reviews", () => {
         role: "auditor",
         displayName: "Auditor",
         createdAt: new Date(clock * 1000).toISOString(),
-      },
+      }
     );
     const reviewerKey = nacl.sign.keyPair();
     const wallet = address(reviewerKey.publicKey);
@@ -167,8 +167,10 @@ describe("reviews", () => {
     const app = await buildHistoryApp({
       db,
       getDashboardUser: async (token) => {
-        if (token === "reviewer") return { id: reviewerId, email: "reviewer@leash.local" };
-        if (token === "auditor") return { id: auditorId, email: "auditor@leash.local" };
+        if (token === "reviewer")
+          return { id: reviewerId, email: "reviewer@leash.local" };
+        if (token === "auditor")
+          return { id: auditorId, email: "auditor@leash.local" };
         return null;
       },
       internalSecret: "internal-test-secret",
@@ -180,14 +182,22 @@ describe("reviews", () => {
     const blocked = await post(
       app,
       `/reviews/${id}/decision`,
-      { status: "approved", wallet, nonce: "x".repeat(32), signature: "y".repeat(64) },
-      { authorization: "Bearer auditor" },
+      {
+        status: "approved",
+        wallet,
+        nonce: "x".repeat(32),
+        signature: "y".repeat(64),
+      },
+      { authorization: "Bearer auditor" }
     );
     expect(blocked.status).toBe(403);
     expect(blocked.body.error).toBe("FORBIDDEN");
     expect(db.reviews[0].status).toBe("pending");
 
-    const nonce = await post(app, "/auth/challenge", { wallet, purpose: "review" });
+    const nonce = await post(app, "/auth/challenge", {
+      wallet,
+      purpose: "review",
+    });
     const message = reviewMessage({
       wallet,
       paymentId: id,
@@ -203,7 +213,7 @@ describe("reviews", () => {
         nonce: nonce.body.nonce,
         signature: sign(message, reviewerKey.secretKey),
       },
-      { authorization: "Bearer reviewer" },
+      { authorization: "Bearer reviewer" }
     );
     expect(decided.status).toBe(200);
     expect(decided.body.status).toBe("approved");
@@ -226,10 +236,10 @@ describe("reviews", () => {
             decision: "denied",
             nonce: secondNonce.body.nonce,
           }),
-          reviewerKey.secretKey,
+          reviewerKey.secretKey
         ),
       },
-      { authorization: "Bearer reviewer" },
+      { authorization: "Bearer reviewer" }
     );
     expect(repeat.status).toBe(409);
     expect(repeat.body.error).toBe("ALREADY_DECIDED");
@@ -274,7 +284,7 @@ describe("reviews", () => {
       app,
       `/reviews/${id}/decision`,
       {},
-      { authorization: "Bearer reviewer" },
+      { authorization: "Bearer reviewer" }
     );
     expect(response.status).toBe(409);
     expect(response.body.error).toBe("TIMED_OUT");
@@ -283,7 +293,7 @@ describe("reviews", () => {
       app,
       `/reviews/${id}/decision`,
       {},
-      { authorization: "Bearer reviewer" },
+      { authorization: "Bearer reviewer" }
     );
     expect(again.status).toBe(409);
     expect(db.reviews[0].status).toBe("timed_out");
@@ -303,7 +313,7 @@ describe("row security", () => {
     });
     const user = db.client({ type: "user", userId: "user-1" });
     await expect(
-      user.from("profiles").update({ role: "owner" }).eq("id", "user-1").exec(),
+      user.from("profiles").update({ role: "owner" }).eq("id", "user-1").exec()
     ).rejects.toBeInstanceOf(RlsError);
     expect(db.profiles[0].role).toBe("auditor");
     await user
@@ -360,26 +370,36 @@ describe("row security", () => {
       });
     }
     await expect(
-      user.from("payment_history").insert({ paymentId: payment("4") }).exec(),
+      user
+        .from("payment_history")
+        .insert({ paymentId: payment("4") })
+        .exec()
     ).rejects.toMatchObject({ code: "RLS_DENIED" });
     await expect(
       user
         .from("payment_history")
         .update({ status: "released" })
         .eq("paymentId", payment("3"))
-        .exec(),
+        .exec()
     ).rejects.toMatchObject({ code: "RLS_DENIED" });
     await expect(
-      user.from("clearances").insert({ paymentId: payment("4") }).exec(),
+      user
+        .from("clearances")
+        .insert({ paymentId: payment("4") })
+        .exec()
     ).rejects.toMatchObject({ code: "RLS_DENIED" });
     await expect(
-      user.from("clearances").update({ decision: "allow" }).exec(),
+      user.from("clearances").update({ decision: "allow" }).exec()
     ).rejects.toMatchObject({ code: "RLS_DENIED" });
     await expect(
-      user.from("audit_log").insert({ action: "tamper" }).exec(),
+      user.from("audit_log").insert({ action: "tamper" }).exec()
     ).rejects.toMatchObject({ code: "RLS_DENIED" });
     await expect(
-      user.from("audit_log").update({ action: "tamper" }).eq("id", "audit-1").exec(),
+      user
+        .from("audit_log")
+        .update({ action: "tamper" })
+        .eq("id", "audit-1")
+        .exec()
     ).rejects.toMatchObject({ code: "AUDIT_APPEND_ONLY" });
     await expect(
       db
@@ -387,7 +407,7 @@ describe("row security", () => {
         .from("audit_log")
         .update({ action: "tamper" })
         .eq("id", "audit-1")
-        .exec(),
+        .exec()
     ).rejects.toMatchObject({ code: "AUDIT_APPEND_ONLY" });
     await expect(
       db
@@ -395,7 +415,7 @@ describe("row security", () => {
         .from("audit_log")
         .delete()
         .eq("id", "audit-1")
-        .exec(),
+        .exec()
     ).rejects.toMatchObject({ code: "AUDIT_APPEND_ONLY" });
     await db
       .client({ type: "database_owner" })
@@ -423,7 +443,7 @@ describe("history rules", () => {
   it("keeps the migration fail-closed", () => {
     const sql = readFileSync(
       "supabase/migrations/20261107143000_leash_history.sql",
-      "utf8",
+      "utf8"
     );
     for (const table of [
       "profiles",
@@ -437,7 +457,9 @@ describe("history rules", () => {
       "auth_nonces",
       "audit_log",
     ]) {
-      expect(sql).toContain(`alter table public.${table} enable row level security`);
+      expect(sql).toContain(
+        `alter table public.${table} enable row level security`
+      );
     }
     expect(sql).toContain("role cannot be changed by the user");
     expect(sql).toContain("'auditor'");
@@ -446,6 +468,8 @@ describe("history rules", () => {
     expect(sql).not.toMatch(/on public\.payment_history\s+for insert/i);
     expect(sql).not.toMatch(/on public\.clearances\s+for insert/i);
     expect(sql).not.toMatch(/on public\.audit_log\s+for update/i);
-    expect(sql).toContain("revoke all on public.payment_history from public, anon, authenticated");
+    expect(sql).toContain(
+      "revoke all on public.payment_history from public, anon, authenticated"
+    );
   });
 });

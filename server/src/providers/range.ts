@@ -26,7 +26,7 @@ export class RangeSanctions {
           method: "GET",
           headers: { "X-API-KEY": this.apiKey, accept: "application/json" },
         },
-        this.fetchImpl,
+        this.fetchImpl
       );
       outcome = interpretRange(response.status, response.body);
     } catch (error) {

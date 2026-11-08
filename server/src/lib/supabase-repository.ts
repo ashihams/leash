@@ -58,7 +58,7 @@ export class SupabaseRepository implements HistoryRepository {
   async consumeNonce(
     nonce: string,
     wallet: string,
-    nowSeconds: number,
+    nowSeconds: number
   ): Promise<boolean> {
     const { data, error } = await this.supabase
       .from("auth_nonces")
@@ -72,7 +72,9 @@ export class SupabaseRepository implements HistoryRepository {
     return Array.isArray(data) && data.length > 0;
   }
 
-  async insertAudit(row: Omit<AuditRow, "id"> & { id?: string }): Promise<void> {
+  async insertAudit(
+    row: Omit<AuditRow, "id"> & { id?: string }
+  ): Promise<void> {
     const { error } = await this.supabase.from("audit_log").insert({
       actor_type: row.actorType,
       actor_id: row.actorId,
@@ -111,7 +113,10 @@ export class SupabaseRepository implements HistoryRepository {
     if (error) throw new Error("CHECK_UNAVAILABLE");
   }
 
-  async findLinked(userId: string, wallet: string): Promise<LinkedWallet | null> {
+  async findLinked(
+    userId: string,
+    wallet: string
+  ): Promise<LinkedWallet | null> {
     const { data, error } = await this.supabase
       .from("linked_wallets")
       .select("id, user_id, wallet, kind, verified_at, created_at")
@@ -181,7 +186,7 @@ export class SupabaseRepository implements HistoryRepository {
     const { data, error } = await this.supabase
       .from("clearances")
       .select(
-        "payment_id, decision, checks_run, checks_failed, policy_version, list_version, expires_at, signature, created_at",
+        "payment_id, decision, checks_run, checks_failed, policy_version, list_version, expires_at, signature, created_at"
       )
       .eq("payment_id", paymentId)
       .maybeSingle();
@@ -217,7 +222,9 @@ export class SupabaseRepository implements HistoryRepository {
   async listChecks(paymentId: string): Promise<CheckRow[]> {
     const { data, error } = await this.supabase
       .from("check_results")
-      .select("id, payment_id, check_id, status, reason_code, evidence_hash, created_at")
+      .select(
+        "id, payment_id, check_id, status, reason_code, evidence_hash, created_at"
+      )
       .eq("payment_id", paymentId);
     fail(error);
     return (data ?? []).map((row) => ({
@@ -245,7 +252,7 @@ export class SupabaseRepository implements HistoryRepository {
     const { data, error } = await this.supabase
       .from("review_queue")
       .select(
-        "payment_id, flagged, status, reviewer_user_id, reviewer_wallet, reviewer_signature, created_at, decided_at",
+        "payment_id, flagged, status, reviewer_user_id, reviewer_wallet, reviewer_signature, created_at, decided_at"
       )
       .order("created_at", { ascending: false });
     fail(error);
@@ -256,7 +263,7 @@ export class SupabaseRepository implements HistoryRepository {
     const { data, error } = await this.supabase
       .from("review_queue")
       .select(
-        "payment_id, flagged, status, reviewer_user_id, reviewer_wallet, reviewer_signature, created_at, decided_at",
+        "payment_id, flagged, status, reviewer_user_id, reviewer_wallet, reviewer_signature, created_at, decided_at"
       )
       .eq("payment_id", paymentId)
       .maybeSingle();
@@ -272,7 +279,7 @@ export class SupabaseRepository implements HistoryRepository {
       reviewerWallet: string | null;
       reviewerSignature: string | null;
       decidedAt: string;
-    },
+    }
   ): Promise<"ok" | "missing" | "decided"> {
     const existing = await this.getReview(paymentId);
     if (!existing) return "missing";
@@ -296,7 +303,9 @@ export class SupabaseRepository implements HistoryRepository {
   async listAudit(paymentId: string): Promise<AuditRow[]> {
     const { data, error } = await this.supabase
       .from("audit_log")
-      .select("id, actor_type, actor_id, action, payment_id, details, created_at")
+      .select(
+        "id, actor_type, actor_id, action, payment_id, details, created_at"
+      )
       .eq("payment_id", paymentId);
     fail(error);
     return (data ?? []).map((row) => ({

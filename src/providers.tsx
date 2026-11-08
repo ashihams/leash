@@ -1,9 +1,18 @@
-import { watchWalletStandardConnectors, createClient, type WalletConnector } from "@solana/client";
+import {
+  watchWalletStandardConnectors,
+  createClient,
+  type WalletConnector,
+} from "@solana/client";
 import { SolanaProvider } from "@solana/react-hooks";
-import { PropsWithChildren, useEffect, useState, useSyncExternalStore } from "react";
+import {
+  PropsWithChildren,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { DEVNET_CHAIN, isPhantomName } from "./leash/wallet";
 
-const ENDPOINT = "https://api.devnet.solana.com";
+import { DEVNET_RPC as ENDPOINT } from "./leash/deployment";
 
 type PhantomWallet = {
   accounts: readonly { chains: readonly string[] }[];
@@ -30,7 +39,9 @@ export function refreshPhantomChains() {
 
 function rememberPhantom(wallet: PhantomWallet) {
   phantomWallet = wallet;
-  const account = wallet.accounts.find((item) => item.chains.includes(DEVNET_CHAIN)) ?? wallet.accounts[0];
+  const account =
+    wallet.accounts.find((item) => item.chains.includes(DEVNET_CHAIN)) ??
+    wallet.accounts[0];
   publishChains(account?.chains ?? []);
   const events = wallet.features?.["standard:events"];
   if (events && !watched.has(wallet)) {
@@ -50,13 +61,13 @@ export function usePhantomChains() {
       return () => listeners.delete(listener);
     },
     phantomChainsSnapshot,
-    () => [],
+    () => []
   );
 }
 
 export function Providers({ children }: PropsWithChildren) {
   const [client, setClient] = useState(() =>
-    createClient({ endpoint: ENDPOINT, walletConnectors: [] }),
+    createClient({ endpoint: ENDPOINT, walletConnectors: [] })
   );
 
   useEffect(() => {
@@ -64,7 +75,9 @@ export function Providers({ children }: PropsWithChildren) {
     const stop = watchWalletStandardConnectors(
       (found) => {
         if (stopped) return;
-        const phantomOnly = found.filter((connector: WalletConnector) => isPhantomName(connector.name));
+        const phantomOnly = found.filter((connector: WalletConnector) =>
+          isPhantomName(connector.name)
+        );
         setClient((current) => {
           current?.destroy();
           return createClient({
@@ -79,7 +92,7 @@ export function Providers({ children }: PropsWithChildren) {
           rememberPhantom(wallet as PhantomWallet);
           return { defaultChain: DEVNET_CHAIN, id: "wallet-standard:phantom" };
         },
-      },
+      }
     );
     return () => {
       stopped = true;

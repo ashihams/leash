@@ -2,8 +2,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useWalletConnection } from "@solana/react-hooks";
 import nacl from "tweetnacl";
 import { AccountAccess } from "./AccountAccess";
+import { AgentPanel } from "./AgentPanel";
 import { supabase } from "./lib/supabase";
-import { CROSS_BORDER_ROUTES, formatLocalAmount, type FxQuote, type PaymentRoute } from "./leash/corridors";
+import {
+  agentFinalSchema,
+  type AgentContext,
+  type AgentResponse,
+  type AgentStep,
+} from "./leash/agent-contract";
+import { paymentSetupIssue, type PaymentReadiness } from "./leash/readiness";
+import {
+  bannerFrom,
+  mandateRecovery,
+  markFor,
+  type LogLine,
+} from "./leash/evidence";
+import { testVendorTampering } from "./leash/vendor-tampering";
+import {
+  CROSS_BORDER_ROUTES,
+  formatLocalAmount,
+  type FxQuote,
+  type PaymentRoute,
+} from "./leash/corridors";
 import "./dashboard.css";
 import { refreshPhantomChains, usePhantomChains } from "./providers";
 import {
@@ -40,9 +60,7 @@ import {
   accountExists,
   createAtaInstruction,
   createMandateInstruction,
-  corridorPda,
   depositInstruction,
-  ed25519InstructionData,
   deployRentPaid,
   explorerTx,
   fundIfNeeded,
@@ -70,11 +88,27 @@ type Vendor = {
   address: string;
 };
 
-type LogLine = { title: string; detail: string; signature?: string };
-
 const BUDGET = 2;
 const PER_PAYMENT = 1;
 const PAYMENT = 1;
+
+function getStoredMandateId() {
+  try {
+    const val = Number(localStorage.getItem("leash_mandate_id"));
+    if (Number.isInteger(val) && val >= 7) return val;
+  } catch {
+    // Ignore storage failure
+  }
+  return 7;
+}
+
+function storeMandateId(id: number) {
+  try {
+    localStorage.setItem("leash_mandate_id", String(id));
+  } catch {
+    // Ignore storage failure
+  }
+}
 
 export function Dashboard() {
   const { connectors, connect, disconnect, error, wallet, status } =
@@ -91,10 +125,16 @@ export function Dashboard() {
           note: "Demo studio. A registered payout wallet.",
         },
         {
+          name: "Harbor Design",
+          country: "US",
+          blocked: false,
+          note: "Demo design studio. An alternative registered payout wallet.",
+        },
+        {
           name: "Grey Market",
           country: "US",
           blocked: true,
-          note: "Blocked by local policy. OFAC screening and Didit verification are separate checks.",
+          note: "Demo wallet blocked by local policy. OFAC screening is run separately.",
         },
       ].map((vendor) => {
         const pair = nacl.sign.keyPair();
@@ -109,13 +149,16 @@ export function Dashboard() {
   );
 
   const [gateState, setGateState] = useState("The gate has not been checked.");
-  const [mandateId, setMandateId] = useState(7);
+  const [setupIssue, setSetupIssue] =
+    useState<ReturnType<typeof paymentSetupIssue>>(null);
+  const [mandateId, setMandateId] = useState(getStoredMandateId);
   const [mandateAccount, setMandateAccount] = useState("");
   const [vendorName, setVendorName] = useState(vendors[0].name);
-  const [verificationLink, setVerificationLink] = useState<{ wallet: string; url: string } | null>(null);
   const [amount, setAmount] = useState(String(PAYMENT));
   const [routeId, setRouteId] = useState<string>(CROSS_BORDER_ROUTES[0].id);
-  const route = CROSS_BORDER_ROUTES.find((item) => item.id === routeId) ?? CROSS_BORDER_ROUTES[0];
+  const route =
+    CROSS_BORDER_ROUTES.find((item) => item.id === routeId) ??
+    CROSS_BORDER_ROUTES[0];
   const [fxQuote, setFxQuote] = useState<FxQuote | null>(null);
   const [fxError, setFxError] = useState("");
   const [fxRefresh, setFxRefresh] = useState(0);
@@ -129,7 +172,7 @@ export function Dashboard() {
   const accountPanel = useRef<HTMLDivElement>(null);
   const [accountOpen, setAccountOpen] = useState(false);
   const session = useRef({
-    mandateId: 7,
+    mandateId: getStoredMandateId(),
     mandateAccount: "",
     mandateOwner: "",
     mandateRoutes: "",
@@ -166,9 +209,21 @@ export function Dashboard() {
         const response = await gate(`/fx/quote?currency=${route.currency}`);
         if (cancelled) return;
         const quote = response.body as unknown as FxQuote;
-        if (response.status !== 200 || quote.currency !== route.currency || quote.base !== "USDC" || !Number.isFinite(quote.rate) || quote.rate <= 0 || !Number.isFinite(Date.parse(quote.expiresAt)) || Date.parse(quote.expiresAt) <= Date.now()) throw new Error("Market rate unavailable. Try again.");
+        if (
+          response.status !== 200 ||
+          quote.currency !== route.currency ||
+          quote.base !== "USDC" ||
+          !Number.isFinite(quote.rate) ||
+          quote.rate <= 0 ||
+          !Number.isFinite(Date.parse(quote.expiresAt)) ||
+          Date.parse(quote.expiresAt) <= Date.now()
+        )
+          throw new Error("Market rate unavailable. Try again.");
         setFxQuote(quote);
-        nextRefresh = Math.max(1000, Math.min(60_000, Date.parse(quote.expiresAt) - Date.now()));
+        nextRefresh = Math.max(
+          1000,
+          Math.min(60_000, Date.parse(quote.expiresAt) - Date.now())
+        );
       } catch {
         if (!cancelled) setFxError("Market rate unavailable. Try again.");
       } finally {
@@ -176,7 +231,10 @@ export function Dashboard() {
       }
     };
     void refresh();
-    return () => { cancelled = true; clearTimeout(timer); };
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [route.currency, fxRefresh]);
   const chains = usePhantomChains();
   const [genesisOk, setGenesisOk] = useState<boolean | null>(null);
@@ -184,8 +242,15 @@ export function Dashboard() {
   const [rentPaid, setRentPaid] = useState(false);
   const [solBalance, setSolBalance] = useState<bigint | null>(null);
 
-  function push(title: string, detail: string, signature?: string) {
-    setLog((current) => [{ title, detail, signature }, ...current].slice(0, 12));
+  function push(
+    title: string,
+    detail: string,
+    signature?: string,
+    testOutcome?: LogLine["testOutcome"]
+  ) {
+    setLog((current) =>
+      [{ title, detail, signature, testOutcome }, ...current].slice(0, 12)
+    );
   }
 
   async function sendOwner(instructions: Parameters<typeof sendLocal>[1]) {
@@ -194,12 +259,17 @@ export function Dashboard() {
       chains,
       connected: Boolean(connected),
     });
-    if (!guard.ok && guard.reason === "rpc") throw new Error("RPC is not devnet");
+    if (!guard.ok && guard.reason === "rpc")
+      throw new Error("RPC is not devnet");
     if (!guard.ok) {
-      throw new Error("Switch Phantom to Devnet before signing. Open Settings, then Developer Settings, then Testnet Mode.");
+      throw new Error(
+        "Switch Phantom to Devnet before signing. Open Settings, then Developer Settings, then Testnet Mode."
+      );
     }
     if (!(await programIsDeployed())) {
-      throw new Error("The Leash program is missing on devnet. Complete deployment before retrying. No payment or deployment funding was sent.");
+      throw new Error(
+        "The Leash program is missing on devnet. Complete deployment before retrying. No payment or deployment funding was sent."
+      );
     }
     if (connected && wallet?.signTransaction) {
       const signTransaction = wallet.signTransaction;
@@ -207,16 +277,21 @@ export function Dashboard() {
         sendSignedByWallet(
           (transaction) => signTransaction(transaction as never),
           instructions,
-          ownerAddress,
-        ),
+          ownerAddress
+        )
       );
     }
     const sent = await sendLocal(demoOwner.secretKey, instructions);
-    if (sent.airdrop) push("Airdrop", "Requested devnet SOL for the fee.", sent.airdrop);
+    if (sent.airdrop)
+      push("Airdrop", "Requested devnet SOL for the fee.", sent.airdrop);
     return sent.signature;
   }
 
-  async function recordTx(title: string, detail: string, work: () => Promise<string>) {
+  async function recordTx(
+    title: string,
+    detail: string,
+    work: () => Promise<string>
+  ) {
     try {
       const signature = await work();
       push(title, detail, signature);
@@ -238,16 +313,22 @@ export function Dashboard() {
     if ((await lamportBalance(publicKey)) >= 20_000_000n) return;
     if (!connected) {
       throw new Error(
-        "This key has no devnet SOL. Connect a wallet that already has devnet SOL. The public faucet no longer airdrops without a GitHub sign-in.",
+        "This key has no devnet SOL. Connect a wallet that already has devnet SOL. The public faucet no longer airdrops without a GitHub sign-in."
       );
     }
-    const signature = await sendOwner([transferSolInstruction(ownerAddress, publicKey, 50_000_000)]);
-    push("Fee", "Sent devnet SOL from the connected wallet to pay the fee.", signature);
+    const signature = await sendOwner([
+      transferSolInstruction(ownerAddress, publicKey, 50_000_000),
+    ]);
+    push(
+      "Fee",
+      "Sent devnet SOL from the connected wallet to pay the fee.",
+      signature
+    );
   }
 
   async function prepareTreasury(
     ready: { id: number; account: string; owner: string; mint: string },
-    needed: number,
+    needed: number
   ) {
     if (!(await accountExists(ready.account))) {
       const opened = await recordTx(
@@ -265,7 +346,7 @@ export function Dashboard() {
               perPayment: usdcToBase(PER_PAYMENT),
               expiresAt: Math.floor(Date.now() / 1000) + 86_400 * 10,
             }),
-          ]),
+          ])
       );
       if (!opened) return false;
     }
@@ -277,19 +358,26 @@ export function Dashboard() {
       return false;
     }
     if (typeof minted.body.signature === "string") {
-      push("Test USDC", "Minted test USDC into the owner account on devnet.", minted.body.signature);
+      push(
+        "Test USDC",
+        "Minted test USDC into the owner account on devnet.",
+        minted.body.signature
+      );
     }
-    return recordTx("Deposit", "Deposited test USDC into the treasury.", async () =>
-      sendOwner([
-        await createAtaInstruction(ready.owner, ready.owner, ready.mint),
-        await depositInstruction({
-          owner: ready.owner,
-          mandate: ready.account,
-          mandateId: ready.id,
-          mint: ready.mint,
-          amount: usdcToBase(BUDGET),
-        }),
-      ]),
+    return recordTx(
+      "Deposit",
+      "Deposited test USDC into the treasury.",
+      async () =>
+        sendOwner([
+          await createAtaInstruction(ready.owner, ready.owner, ready.mint),
+          await depositInstruction({
+            owner: ready.owner,
+            mandate: ready.account,
+            mandateId: ready.id,
+            mint: ready.mint,
+            amount: usdcToBase(BUDGET),
+          }),
+        ])
     );
   }
 
@@ -298,7 +386,7 @@ export function Dashboard() {
     paymentId: string,
     vendorAddress: string,
     instructionData: string,
-    title: string,
+    title: string
   ) {
     return recordTx(title, "Submitted create_and_fund on devnet.", async () => {
       await sponsor(agentAddress);
@@ -328,19 +416,36 @@ export function Dashboard() {
   }
 
   const readGate = useCallback(async (): Promise<string> => {
+    session.current.mint = "";
     const result = await gate("/health");
     if (result.status !== 200) {
       setGateState("The gate answered, but not with a health record.");
       return "";
     }
     const reportedMint = String(result.body.mint ?? "");
-    session.current.mint = reportedMint;
     session.current.verifier = String(result.body.verifier ?? "");
     setGateState(
       `Gate is up. Policy signer ${String(result.body.policySigner ?? "")}.`
     );
+    const readiness = await gate("/health/chain");
+    const issue =
+      readiness.status === 200
+        ? paymentSetupIssue(
+            readiness.body as unknown as PaymentReadiness,
+            route.id
+          )
+        : {
+            title: "Readiness check unavailable",
+            detail:
+              readiness.status === 404
+                ? "The backend needs an update or restart before it can check payment readiness."
+                : "The backend could not verify devnet readiness. Retry the gate check before making a payment.",
+          };
+    setSetupIssue(issue);
+    if (issue) return "";
+    session.current.mint = reportedMint;
     return reportedMint;
-  }, []);
+  }, [route.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -358,14 +463,16 @@ export function Dashboard() {
     let cancelled = false;
     let timer = 0;
     const check = () => {
-      Promise.all([programIsDeployed(), deployRentPaid()]).then(([ready, paid]) => {
-        if (cancelled) return;
-        setProgramOnDevnet(ready);
-        setRentPaid(paid);
-        if (!ready) timer = window.setTimeout(check, 15000);
-      }).catch(() => {
-        if (!cancelled) timer = window.setTimeout(check, 15000);
-      });
+      Promise.all([programIsDeployed(), deployRentPaid()])
+        .then(([ready, paid]) => {
+          if (cancelled) return;
+          setProgramOnDevnet(ready);
+          setRentPaid(paid);
+          if (!ready) timer = window.setTimeout(check, 15000);
+        })
+        .catch(() => {
+          if (!cancelled) timer = window.setTimeout(check, 15000);
+        });
     };
     check();
     return () => {
@@ -434,7 +541,8 @@ export function Dashboard() {
     };
     const onPointer = (event: PointerEvent) => {
       const target = event.target as Node;
-      if (panel?.contains(target) || accountButton.current?.contains(target)) return;
+      if (panel?.contains(target) || accountButton.current?.contains(target))
+        return;
       setAccountOpen(false);
     };
     document.addEventListener("keydown", onKey);
@@ -454,7 +562,6 @@ export function Dashboard() {
   }
 
   async function loadMint() {
-    if (session.current.mint) return session.current.mint;
     try {
       return await readGate();
     } catch {
@@ -498,17 +605,12 @@ export function Dashboard() {
   }
 
   async function ensureMandate(startId: number, reopenCorridor: boolean) {
-    if (!(await programIsDeployed())) {
-      push("Deployment required", "The Leash program is missing on devnet. No mandate or payment was created. Complete deployment before retrying.");
-      return null;
-    }
-    if (!(await accountExists(await corridorPda(route.fromCountry, route.toCountry)))) {
-      push("Route setup required", `${route.fromCountry} → ${route.toCountry} must be initialized on devnet before payment. No wallet transaction was requested.`);
-      return null;
-    }
     const activeMint = await loadMint();
     if (!activeMint) {
-      push("Gate", "The gate did not report the test mint.");
+      push(
+        "Payment setup blocked",
+        "Check the payment readiness notice above. No wallet transaction was requested."
+      );
       return null;
     }
     if (!(await registerVendors())) return null;
@@ -516,16 +618,19 @@ export function Dashboard() {
       if (!(await writeCorridor(true))) return null;
     }
     const who =
-      ownerAddress === connected ? "the connected wallet" : "the demo owner key";
+      ownerAddress === connected
+        ? "the connected wallet"
+        : "the demo owner key";
     if (
       session.current.mandateAccount &&
       session.current.mandateOwner === ownerAddress &&
-      session.current.mandateRoutes === CROSS_BORDER_ROUTES.map((item) => item.id).join(",") &&
+      session.current.mandateRoutes ===
+        CROSS_BORDER_ROUTES.map((item) => item.id).join(",") &&
       (startId === session.current.mandateId || !reopenCorridor)
     ) {
       if (reopenCorridor) {
         push(
-          "Mandate registered",
+          "Mandate selected",
           `Mandate ${session.current.mandateId} is registered in the gate for ${who}. Budget ${BUDGET}.00 USDC.`
         );
       }
@@ -540,7 +645,7 @@ export function Dashboard() {
     const skipped: number[] = [];
     let id = startId;
     try {
-      for (let attempt = 0; attempt < 40; attempt += 1) {
+      for (let attempt = 0; attempt < 120; attempt += 1) {
         const mandate = String(await mandatePda(ownerAddress, id));
         const created = await gate("/mandates", {
           mandateId: id,
@@ -554,7 +659,10 @@ export function Dashboard() {
           deliverySeconds: 3600,
           acceptanceSeconds: 3600,
           category: 7,
-          corridors: CROSS_BORDER_ROUTES.map(({ fromCountry, toCountry }) => ({ fromCountry, toCountry })),
+          corridors: CROSS_BORDER_ROUTES.map(({ fromCountry, toCountry }) => ({
+            fromCountry,
+            toCountry,
+          })),
         });
         if (
           created.status === 409 &&
@@ -571,9 +679,15 @@ export function Dashboard() {
         session.current.mandateId = id;
         session.current.mandateAccount = mandate;
         session.current.mandateOwner = ownerAddress;
-        session.current.mandateRoutes = CROSS_BORDER_ROUTES.map((item) => item.id).join(",");
+        session.current.mandateRoutes = CROSS_BORDER_ROUTES.map(
+          (item) => item.id
+        ).join(",");
         setMandateId(id);
         setMandateAccount(mandate);
+        storeMandateId(id);
+        setLastClearance(null);
+        setLastPayment("");
+        setFunded(null);
         push(
           "Mandate registered",
           skipped.length > 0
@@ -591,7 +705,11 @@ export function Dashboard() {
     }
     session.current.mandateId = id;
     setMandateId(id);
-    push("Mandate", `${skippedLabel(skipped)} No free mandate id was left in that search.`);
+    storeMandateId(id);
+    push(
+      "Mandate",
+      `${skippedLabel(skipped)} No free mandate id was left in that search.`
+    );
     return null;
   }
 
@@ -599,6 +717,170 @@ export function Dashboard() {
     const ready = await ensureMandate(nextId, true);
     if (ready) await prepareTreasury(ready, usdcToBase(BUDGET));
     return ready;
+  }
+
+  async function runAgentProposal(
+    agentGoal: string,
+    simulate: boolean
+  ): Promise<AgentResponse> {
+    if (actionLock.current)
+      throw new Error("Wait for the current action to finish.");
+    actionLock.current = true;
+    setBusy(true);
+    try {
+      const auth = supabase ? await supabase.auth.getSession() : null;
+      const token = auth?.data.session?.access_token;
+      if (!token)
+        throw new Error(
+          "Sign in to your dashboard account before running the agent."
+        );
+      const ready = await ensureMandate(session.current.mandateId, false);
+      if (!ready)
+        throw new Error(
+          "Complete mandate and route setup before running the agent."
+        );
+      // Finite proposals prepared by the existing browser signer. No private key
+      // or signing capability is given to the server or to the language model.
+      const goalAmounts = [
+        ...agentGoal.matchAll(/(\d+(?:\.\d{1,6})?)\s*USDC/gi),
+      ].map((m) => Number(m[1]));
+      const amounts = [
+        ...new Set([Number(amount), PER_PAYMENT, ...goalAmounts]),
+      ]
+        .filter((n) => Number.isFinite(n) && n > 0 && n <= PER_PAYMENT)
+        .slice(0, 5);
+      const intents: AgentContext["intents"] = [];
+      if (!simulate)
+        for (const candidate of vendors)
+          for (const value of amounts) {
+            if (candidate.blocked) continue;
+            const paymentId = randomHex(),
+              invoiceHash = randomHex(),
+              base = usdcToBase(value);
+            intents.push({
+              vendor: candidate.address,
+              amount: base,
+              paymentId,
+              invoiceHash,
+              intentSignature: signIntent(agent.secretKey, {
+                kind: 1,
+                paymentId,
+                invoiceHash,
+                mandate: ready.account,
+                buyer: ready.owner,
+                vendor: candidate.address,
+                mint: ready.mint,
+                amount: base,
+                fromCountry: route.fromCountry,
+                toCountry: route.toCountry,
+              }),
+            });
+          }
+      const result = await gate(
+        "/agent/run",
+        {
+          goal: agentGoal,
+          simulate_compromised: simulate,
+          context: {
+            mandate_id: ready.id,
+            vendor_wallets: vendors.map((v) => v.address),
+            corridor: {
+              fromCountry: route.fromCountry,
+              toCountry: route.toCountry,
+            },
+            intents,
+          },
+        },
+        token
+      );
+      if (result.status !== 200) {
+        const failure = new Error(
+          String(result.body.error ?? "Agent unavailable")
+        ) as Error & { steps?: AgentStep[] };
+        failure.steps = Array.isArray(result.body.steps)
+          ? (result.body.steps as AgentStep[])
+          : [];
+        throw failure;
+      }
+      const response = result.body as unknown as AgentResponse;
+      agentFinalSchema.parse(response.final);
+      return response;
+    } finally {
+      actionLock.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function approveAgentProposal(proposal: AgentResponse) {
+    if (actionLock.current)
+      throw new Error("Wait for the current action to finish.");
+    const candidate = vendors.find(
+      (v) => v.address === proposal.final.chosen_vendor && !v.blocked
+    );
+    if (
+      proposal.label === "SIMULATION" ||
+      proposal.final.gate_result.decision !== "allow" ||
+      !proposal.confirmation ||
+      !candidate
+    )
+      throw new Error("This proposal cannot be funded.");
+    if (
+      proposal.review.owner !== ownerAddress ||
+      proposal.review.mandate !== session.current.mandateAccount ||
+      proposal.review.mandate_id !== session.current.mandateId ||
+      proposal.review.corridor.fromCountry !== route.fromCountry ||
+      proposal.review.corridor.toCountry !== route.toCountry
+    )
+      throw new Error(
+        "The wallet, mandate or corridor changed. Run the agent again."
+      );
+    if (proposal.confirmation.expires_at <= Date.now() / 1000)
+      throw new Error(
+        "The clearance expired. Request a new proposal before funding."
+      );
+    actionLock.current = true;
+    setBusy(true);
+    try {
+      const mint = await loadMint();
+      if (!mint) throw new Error("Payment readiness could not be verified.");
+      const ready = {
+        id: proposal.review.mandate_id,
+        account: proposal.review.mandate,
+        owner: proposal.review.owner,
+        mint,
+      };
+      if (!(await prepareTreasury(ready, usdcToBase(BUDGET))))
+        throw new Error("Treasury setup was not completed.");
+      if (proposal.confirmation.expires_at <= Date.now() / 1000)
+        throw new Error(
+          "The clearance expired during setup. Request a new proposal."
+        );
+      if (
+        !(await submitFund(
+          ready,
+          proposal.confirmation.payment_id,
+          candidate.address,
+          proposal.confirmation.instruction_data,
+          "Fund"
+        ))
+      )
+        throw new Error(
+          "Funding was not confirmed. Check Evidence before retrying."
+        );
+      setLastPayment(proposal.confirmation.payment_id);
+      setFunded({
+        invoiceHash: proposal.confirmation.invoice_hash,
+        amount: usdcToBase(proposal.final.amount),
+        vendor: candidate.address,
+        route: proposal.review.corridor,
+      });
+      setLastClearance(null);
+      setVendorName(candidate.name);
+      setAmount(String(proposal.final.amount));
+    } finally {
+      actionLock.current = false;
+      setBusy(false);
+    }
   }
 
   async function ask(next?: {
@@ -614,22 +896,35 @@ export function Dashboard() {
       push("Amount", "Enter a USDC amount greater than zero.");
       return null;
     }
-    if (!fxQuote || fxQuote.currency !== route.currency || Date.parse(fxQuote.expiresAt) <= Date.now()) {
-      push("Market rate unavailable", "Refresh the market rate before requesting this cross-border payment.");
+    if (
+      !fxQuote ||
+      fxQuote.currency !== route.currency ||
+      Date.parse(fxQuote.expiresAt) <= Date.now()
+    ) {
+      push(
+        "Market rate unavailable",
+        "Refresh the market rate before requesting this cross-border payment."
+      );
       return null;
     }
     const ready = await ensureMandate(session.current.mandateId, false);
     if (!ready) return null;
     setLastClearance(null);
     const screening = await gate(`/vendors/${chosen.address}/checks`, {});
-    if (typeof screening.body.paymentId === "string") await showProviderEvidence(screening.body.paymentId);
+    if (typeof screening.body.paymentId === "string")
+      await showProviderEvidence(screening.body.paymentId);
     if (screening.status >= 400 || screening.body.ok !== true) {
-      const reasons = Array.isArray(screening.body.reasons) ? screening.body.reasons.join(", ") : String(screening.body.reason ?? screening.body.error ?? "CHECK_UNAVAILABLE");
+      const reasons = Array.isArray(screening.body.reasons)
+        ? screening.body.reasons.join(", ")
+        : String(
+            screening.body.reason ?? screening.body.error ?? "CHECK_UNAVAILABLE"
+          );
       push(`${chosen.name} · Deny`, reasons);
       return null;
     }
     // Blocked vendors must reach the gate's refusal without wallet setup prompts.
-    if (!chosen.blocked && !(await prepareTreasury(ready, usdcToBase(BUDGET)))) return null;
+    if (!chosen.blocked && !(await prepareTreasury(ready, usdcToBase(BUDGET))))
+      return null;
     try {
       const paymentId = randomHex();
       const invoiceHash = randomHex();
@@ -685,10 +980,9 @@ export function Dashboard() {
           "Vendor blocked",
           `${chosen.name} is blocked. No transaction was requested. Choose another vendor to continue.`
         );
-      } else if (
-        reasons.includes("PAYMENT_LIMIT") ||
-        reasons.includes("BUDGET")
-      ) {
+      } else if (mandateRecovery(reasons)) {
+        push("Adapt", mandateRecovery(reasons)!);
+      } else if (reasons.includes("PAYMENT_LIMIT")) {
         setAmount(String(PAYMENT));
         push(
           "Adapt",
@@ -701,22 +995,40 @@ export function Dashboard() {
         );
       } else if (reasons.includes("CORRIDOR_BLOCKED")) {
         push("Adapt", "The corridor is closed. Reopen it, or stop.");
-      } else if (reasons.includes("MANDATE_REVOKED")) {
-        push(
-          "Adapt",
-          "This mandate is revoked. Open a new one for the next payment."
-        );
       }
-      if (result.body.decision === "allow" && typeof result.body.instructionData === "string") {
+      if (
+        result.body.decision === "allow" &&
+        typeof result.body.instructionData === "string"
+      ) {
         if (chosen.blocked) {
-          push("Payment refused", "The selected vendor is blocked. No transaction was requested.");
+          push(
+            "Payment refused",
+            "The selected vendor is blocked. No transaction was requested."
+          );
           return null;
         }
-        if (!(await submitFund(ready, paymentId, chosen.address, result.body.instructionData, "Fund"))) return null;
+        if (
+          !(await submitFund(
+            ready,
+            paymentId,
+            chosen.address,
+            result.body.instructionData,
+            "Fund"
+          ))
+        )
+          return null;
         setLastPayment(paymentId);
-        setFunded({ invoiceHash, amount: base, vendor: chosen.address, route: { fromCountry: route.fromCountry, toCountry: route.toCountry } });
+        setFunded({
+          invoiceHash,
+          amount: base,
+          vendor: chosen.address,
+          route: { fromCountry: route.fromCountry, toCountry: route.toCountry },
+        });
       } else if (result.body.decision === "allow") {
-        push("Fund failed", "The gate returned no transaction instruction. No payment was sent.");
+        push(
+          "Fund failed",
+          "The gate returned no transaction instruction. No payment was sent."
+        );
         return null;
       }
       return {
@@ -742,29 +1054,11 @@ export function Dashboard() {
     if (!Array.isArray(evidence.body.providerChecks)) return;
     for (const raw of evidence.body.providerChecks) {
       const check = raw as Record<string, unknown>;
-      push(`${String(check.provider).toUpperCase()} · ${check.status === "pass" ? "Pass" : "Refused"}`, String(check.publicNote || check.reasonCode || "Provider check passed."));
+      push(
+        `${String(check.provider).toUpperCase()} · ${check.status === "pass" ? "Pass" : "Refused"}`,
+        String(check.publicNote || check.reasonCode || "Provider check passed.")
+      );
     }
-  }
-
-  async function startVendorVerification() {
-    if (verificationLink?.wallet === vendor.address) return;
-    const { data } = supabase ? await supabase.auth.getSession() : { data: { session: null } };
-    if (!data.session) {
-      push("Didit", "Sign in with an owner account before starting vendor verification.");
-      return;
-    }
-    const response = await fetch(`${import.meta.env.VITE_GATE_URL ?? "/gate"}/vendors/${vendor.address}/verification`, {
-      method: "POST", headers: { authorization: `Bearer ${data.session.access_token}` },
-    });
-    const body = await response.json() as Record<string, unknown>;
-    if (!response.ok || typeof body.url !== "string") {
-      push("Didit", String(body.error ?? "CHECK_UNAVAILABLE"));
-      return;
-    }
-    const url = new URL(body.url);
-    if (url.protocol !== "https:" || !["verify.didit.me", "verification.didit.me"].includes(url.hostname)) throw new Error("Unexpected Didit verification URL");
-    setVerificationLink({ wallet: vendor.address, url: url.href });
-    push("Didit session", "Open the verification link and complete the vendor's verification, then ask for a clearance again. A session link is not an approval.");
   }
 
   function remember(result: GateResult) {
@@ -782,7 +1076,10 @@ export function Dashboard() {
 
   async function deliverAndRelease() {
     if (vendor.blocked || (funded && funded.vendor !== vendor.address)) {
-      push("Release refused", "Select the vendor of the funded payment before releasing it. Blocked vendors cannot receive a payment.");
+      push(
+        "Release refused",
+        "Select the vendor of the funded payment before releasing it. Blocked vendors cannot receive a payment."
+      );
       return;
     }
     let paymentId = lastPayment;
@@ -823,7 +1120,10 @@ export function Dashboard() {
       }
       const payout = vendors.find((item) => item.address === payment.vendor);
       if (!payout) {
-        push("Delivery", "This page no longer has the vendor key for that payout.");
+        push(
+          "Delivery",
+          "This page no longer has the vendor key for that payout."
+        );
         return;
       }
       const submitted = await recordTx(
@@ -842,7 +1142,7 @@ export function Dashboard() {
             }),
           ]);
           return sent.signature;
-        },
+        }
       );
       if (!submitted) return;
       const verified = await gate("/payments/verify", {
@@ -853,7 +1153,8 @@ export function Dashboard() {
         push("Verifier", errorText(verified));
         return;
       }
-      if (!session.current.verifier) throw new Error("The gate did not report its verifier wallet.");
+      if (!session.current.verifier)
+        throw new Error("The gate did not report its verifier wallet.");
       await sponsor(session.current.verifier);
       const chainVerify = await gate("/chain/verify", {
         paymentId,
@@ -867,7 +1168,7 @@ export function Dashboard() {
         push(
           "Verifier",
           "The verifier account marked the delivery on devnet.",
-          chainVerify.body.signature,
+          chainVerify.body.signature
         );
       }
       const release = await gate("/clearances/release", {
@@ -889,19 +1190,26 @@ export function Dashboard() {
         release.body.decision === "allow" ? "Release allow" : "Release refused",
         reasonsOf(release).join(", ") || "The gate signed the release."
       );
-      if (release.body.decision === "allow" && typeof release.body.instructionData === "string") {
-        const released = await recordTx("Release", "Submitted the release on devnet.", async () => {
-          await sponsor(agentAddress);
-          const instructions = await releaseInstructions({
-            route: payment.route,
-            agent: agentAddress,
-            vendor: payment.vendor,
-            mint: activeMint,
-            paymentId: hexToBytes(paymentId),
-            ed25519: base64ToBytes(release.body.instructionData as string),
-          });
-          return (await sendLocal(agent.secretKey, instructions)).signature;
-        });
+      if (
+        release.body.decision === "allow" &&
+        typeof release.body.instructionData === "string"
+      ) {
+        const released = await recordTx(
+          "Release",
+          "Submitted the release on devnet.",
+          async () => {
+            await sponsor(agentAddress);
+            const instructions = await releaseInstructions({
+              route: payment.route,
+              agent: agentAddress,
+              vendor: payment.vendor,
+              mint: activeMint,
+              paymentId: hexToBytes(paymentId),
+              ed25519: base64ToBytes(release.body.instructionData as string),
+            });
+            return (await sendLocal(agent.secretKey, instructions)).signature;
+          }
+        );
         if (released) {
           setFunded(null);
           setLastClearance(null);
@@ -916,46 +1224,29 @@ export function Dashboard() {
   }
 
   async function swapVendor() {
-    const clearance =
-      lastClearance ?? (await ask())?.clearance ?? null;
-    if (!clearance) {
-      push("Swap", "The gate did not sign a clearance, so there is nothing to swap.");
+    if (!lastClearance) {
+      push(
+        "Vendor test unavailable",
+        "Request a clearance before testing vendor protection.",
+        undefined,
+        "unavailable"
+      );
       return;
     }
-    const message = base64ToBytes(clearance.message);
-    const signature = base64ToBytes(clearance.signature);
-    const signer = decodeBase58(clearance.signer);
-    const swapped = message.slice();
-    const other =
-      vendors.find((item) => item.address !== vendor.address) ?? vendors[1];
-    swapped.set(other.publicKey, 100);
-    const originalOk = nacl.sign.detached.verify(message, signature, signer);
-    const swappedOk = nacl.sign.detached.verify(swapped, signature, signer);
-    push(
-      "Swapped vendor",
-      `Original signature ${originalOk ? "verifies" : "does not verify"}. After the vendor bytes change, the same signature ${swappedOk ? "still verifies" : "does not verify"}. The program rejects that clearance.`
-    );
-    const readyAccount = session.current.mandateAccount;
-    const readyMint = session.current.mint;
-    if (readyAccount && readyMint && message.length >= 36) {
-      await recordTx(
-        "Swap",
-        "Submitted the swapped clearance on devnet. The signature no longer matches.",
-        async () => {
-          await sponsor(agentAddress);
-          const instructions = await fundInstructions({
-            route: { fromCountry: new TextDecoder().decode(message.subarray(172, 174)), toCountry: new TextDecoder().decode(message.subarray(174, 176)) },
-            agent: agentAddress,
-            owner: session.current.mandateOwner,
-            mandate: readyAccount,
-            mandateId: session.current.mandateId,
-            mint: readyMint,
-            vendor: vendor.address,
-            paymentId: message.subarray(4, 36),
-            ed25519: ed25519InstructionData(signature, signer, swapped),
-          });
-          return (await sendLocal(agent.secretKey, instructions)).signature;
-        },
+    try {
+      const result = testVendorTampering(
+        base64ToBytes(lastClearance.message),
+        base64ToBytes(lastClearance.signature),
+        decodeBase58(lastClearance.signer),
+        vendors.map((item) => item.publicKey)
+      );
+      push(result.title, result.detail, undefined, result.testOutcome);
+    } catch {
+      push(
+        "Vendor test unavailable",
+        "The saved clearance could not be read. Request a new clearance before testing.",
+        undefined,
+        "unavailable"
       );
     }
   }
@@ -1005,7 +1296,13 @@ export function Dashboard() {
       );
       if (typeof result.body.instructionData === "string") {
         await prepareTreasury(ready, base);
-        await submitFund(ready, paymentId, vendor.address, result.body.instructionData, "Forced fund");
+        await submitFund(
+          ready,
+          paymentId,
+          vendor.address,
+          result.body.instructionData,
+          "Forced fund"
+        );
       }
     } catch (error) {
       push("Force", error instanceof Error ? error.message : "Force failed.");
@@ -1032,7 +1329,7 @@ export function Dashboard() {
             mandate: ready.account,
             mandateId: ready.id,
           }),
-        ]),
+        ])
       );
     }
     await ask();
@@ -1040,14 +1337,20 @@ export function Dashboard() {
 
   function retryFailed() {
     const title = log[0]?.title ?? "";
-    if (title === "Clearance" || title === "Amount" || title === "Fund" || title === "Deposit" || title === "Test USDC" || title === "Mandate account") {
+    if (
+      title === "Clearance" ||
+      title === "Amount" ||
+      title === "Fund" ||
+      title === "Deposit" ||
+      title === "Test USDC" ||
+      title === "Mandate account"
+    ) {
       return ask();
     }
     if (title === "Release" || title === "Delivery" || title === "Verifier") {
       return deliverAndRelease();
     }
     if (title === "Force" || title === "Forced fund") return forceAllow();
-    if (title === "Swap") return swapVendor();
     if (title === "Revoke") return revoke();
     return checkGate();
   }
@@ -1066,21 +1369,39 @@ export function Dashboard() {
         : "Gate is up. No mandate yet."
       : "Gate is down.";
   const storeLabel =
-    import.meta.env.VITE_GATE_URL === "/api/gate" ? "Supabase" : "local gate";
+    import.meta.env.VITE_GATE_URL === "/api/gate" ||
+    (!import.meta.env.DEV && !import.meta.env.VITE_GATE_URL)
+      ? "Supabase"
+      : "local gate";
   const banner = bannerFrom(log);
   const reasonCodes = banner ? reasonCodesIn(banner.detail) : [];
   const callFailed =
     gateDown ||
     (log[0]
-      ? ["Clearance", "Release", "Force", "Forced fund", "Revoke", "Mandate", "Mandate account", "Gate", "Delivery", "Verifier", "Amount", "Corridor", "Swap", "Fund", "Deposit", "Test USDC"].includes(
-          log[0].title,
-        ) &&
+      ? [
+          "Clearance",
+          "Release",
+          "Force",
+          "Forced fund",
+          "Revoke",
+          "Mandate",
+          "Mandate account",
+          "Gate",
+          "Delivery",
+          "Verifier",
+          "Amount",
+          "Corridor",
+          "Fund",
+          "Deposit",
+          "Test USDC",
+        ].includes(log[0].title) &&
         /fail|rejected|not running|did not|refused|Could not|Enter a|nothing to|returned|No free|CHAIN_/i.test(
-          log[0].detail,
+          log[0].detail
         )
       : false);
   const phantom = connectors.find((connector) => isPhantomName(connector.name));
-  const phantomOffDevnet = Boolean(connected) && chains.length > 0 && !phantomOnDevnet(chains);
+  const phantomOffDevnet =
+    Boolean(connected) && chains.length > 0 && !phantomOnDevnet(chains);
   const txOff = busy || genesisOk !== true || phantomOffDevnet;
   const walletLabel = prompting
     ? "Waiting for Phantom"
@@ -1102,7 +1423,10 @@ export function Dashboard() {
         </nav>
         <div className="d-status">
           <span className="d-badge">Devnet</span>
-          <span className={gateUp ? "d-chip d-chip-up" : "d-chip"} role="status">
+          <span
+            className={gateUp ? "d-chip d-chip-up" : "d-chip"}
+            role="status"
+          >
             <Dot on={gateUp} />
             {gateChecking ? "Checking" : gateUp ? "Up" : "Down"}
           </span>
@@ -1112,7 +1436,9 @@ export function Dashboard() {
             className="d-btn d-btn-secondary d-wallet"
             aria-expanded={accountOpen}
             aria-controls="account-panel"
-            title={connected ?? "No wallet connected. The demo owner key is ready."}
+            title={
+              connected ?? "No wallet connected. The demo owner key is ready."
+            }
             onClick={() => setAccountOpen((open) => !open)}
           >
             {walletLabel}
@@ -1133,9 +1459,9 @@ export function Dashboard() {
               </p>
               <p className="d-note">
                 This page drives the compliance gate, then submits the matching
-                instruction on devnet. Connect Phantom when you want that address
-                to own the mandate and pay the fee. Otherwise the demo owner key
-                is used, and it is not your wallet.
+                instruction on devnet. Connect Phantom when you want that
+                address to own the mandate and pay the fee. Otherwise the demo
+                owner key is used, and it is not your wallet.
               </p>
               <p className="d-status-line" role="status">
                 {status === "connected"
@@ -1145,7 +1471,10 @@ export function Dashboard() {
                     : "Not connected"}
               </p>
               {prompting ? (
-                <p role="status">Approve the request in Phantom. The prompt closes on its own after 60 seconds.</p>
+                <p role="status">
+                  Approve the request in Phantom. The prompt closes on its own
+                  after 60 seconds.
+                </p>
               ) : null}
               {walletNote || (error ? describeWalletError(error) : "") ? (
                 <p role="status">{walletNote || describeWalletError(error)}</p>
@@ -1153,7 +1482,11 @@ export function Dashboard() {
               {!phantom ? (
                 <p>
                   Phantom is not installed.{" "}
-                  <a href={PHANTOM_INSTALL_URL} target="_blank" rel="noreferrer">
+                  <a
+                    href={PHANTOM_INSTALL_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     Install Phantom
                   </a>
                   . The demo owner key still works.
@@ -1165,7 +1498,11 @@ export function Dashboard() {
                   className="d-btn d-btn-secondary"
                   onClick={() => {
                     if (!phantom) {
-                      setWalletNote(afterWalletPrompt(new Error("Phantom is not installed.")).message || "Phantom is not installed.");
+                      setWalletNote(
+                        afterWalletPrompt(
+                          new Error("Phantom is not installed.")
+                        ).message || "Phantom is not installed."
+                      );
                       return;
                     }
                     if (connectLock.current || prompting) return;
@@ -1175,7 +1512,8 @@ export function Dashboard() {
                     withWalletTimeout(connect(phantom.id))
                       .catch(async (caught: unknown) => {
                         setWalletNote(afterWalletPrompt(caught).message);
-                        const message = caught instanceof Error ? caught.message : "";
+                        const message =
+                          caught instanceof Error ? caught.message : "";
                         if (/timed out/i.test(message)) {
                           await Promise.race([
                             disconnect().catch(() => undefined),
@@ -1201,16 +1539,21 @@ export function Dashboard() {
                         "Wallet",
                         mandateOwnerKind(connected) === "demo"
                           ? "No wallet is connected. Connect Phantom, or keep the demo owner key."
-                          : "No wallet is connected.",
+                          : "No wallet is connected."
                       );
                       return;
                     }
                     setPrompting(true);
                     withWalletTimeout(disconnect())
                       .then(() => {
-                        push("Wallet", "Disconnected. The demo owner key is the mandate owner again.");
+                        push(
+                          "Wallet",
+                          "Disconnected. The demo owner key is the mandate owner again."
+                        );
                       })
-                      .catch((caught: unknown) => setWalletNote(afterWalletPrompt(caught).message))
+                      .catch((caught: unknown) =>
+                        setWalletNote(afterWalletPrompt(caught).message)
+                      )
                       .finally(() => setPrompting(false));
                   }}
                 >
@@ -1218,16 +1561,25 @@ export function Dashboard() {
                 </button>
               </div>
               <p className="d-mono" title={connected ?? undefined}>
-                {connected ? shorten(connected) : "No wallet connected. The demo owner key is ready."}
-                {connected ? <CopyButton value={connected} label="wallet address" /> : null}
+                {connected
+                  ? shorten(connected)
+                  : "No wallet connected. The demo owner key is ready."}
+                {connected ? (
+                  <CopyButton value={connected} label="wallet address" />
+                ) : null}
               </p>
               {connected && solBalance !== null ? (
                 <p>
-                  Devnet balance {(Number(solBalance) / 1_000_000_000).toFixed(4)} SOL.
+                  Devnet balance{" "}
+                  {(Number(solBalance) / 1_000_000_000).toFixed(4)} SOL.
                   {solBalance < LOW_SOL_LAMPORTS ? (
                     <>
                       {" "}
-                      <a href={SOLANA_FAUCET_URL} target="_blank" rel="noreferrer">
+                      <a
+                        href={SOLANA_FAUCET_URL}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
                         Get devnet SOL
                       </a>
                       .
@@ -1236,13 +1588,20 @@ export function Dashboard() {
                 </p>
               ) : null}
             </section>
-            <AccountAccess wallet={wallet} />
+            <AccountAccess />
           </div>
         ) : null}
       </header>
       <main id="content" className="d-workspace">
+        {setupIssue ? (
+          <p className="d-error" role="alert">
+            <strong>{setupIssue.title}.</strong> {setupIssue.detail}
+          </p>
+        ) : null}
         {genesisOk === false ? (
-          <p className="d-error" role="alert">RPC is not devnet</p>
+          <p className="d-error" role="alert">
+            RPC is not devnet
+          </p>
         ) : null}
         {programOnDevnet === false ? (
           <p className="d-error" role="status">
@@ -1253,7 +1612,8 @@ export function Dashboard() {
         ) : null}
         {phantomOffDevnet ? (
           <p className="d-error" role="alert">
-            Switch Phantom to Devnet. Open Settings, then Developer Settings, then Testnet Mode.
+            Switch Phantom to Devnet. Open Settings, then Developer Settings,
+            then Testnet Mode.
           </p>
         ) : null}
         <details className="d-card d-gate">
@@ -1263,9 +1623,7 @@ export function Dashboard() {
           </summary>
           <div className="d-card-body">
             <p role="status">{gateState}</p>
-            <p className="d-muted">
-              Devnet · {storeLabel}
-            </p>
+            <p className="d-muted">Devnet · {storeLabel}</p>
             <KeyLine label="Policy signer" value={policySigner} />
             <KeyLine label="Agent key" value={agentAddress} />
             {mandateAccount ? (
@@ -1312,12 +1670,28 @@ export function Dashboard() {
               onChange={(event) => setGoal(event.target.value)}
               rows={2}
             />
+            <AgentPanel
+              goal={goal}
+              busy={busy}
+              runAgent={runAgentProposal}
+              approve={approveAgentProposal}
+            />
             <label htmlFor="payment-route">Cross-border route</label>
-            <select id="payment-route" value={routeId} disabled={busy} onChange={(event) => {
-              setRouteId(event.target.value);
-              setLastClearance(null);
-            }}>
-              {CROSS_BORDER_ROUTES.map((item) => <option key={item.id} value={item.id}>{item.fromCountry} → {item.toCountry} · {item.label} · {item.currency}</option>)}
+            <select
+              id="payment-route"
+              value={routeId}
+              disabled={busy}
+              onChange={(event) => {
+                setRouteId(event.target.value);
+                setLastClearance(null);
+              }}
+            >
+              {CROSS_BORDER_ROUTES.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.fromCountry} → {item.toCountry} · {item.label} ·{" "}
+                  {item.currency}
+                </option>
+              ))}
             </select>
             <label htmlFor="amount">You send · test USDC</label>
             <input
@@ -1327,22 +1701,53 @@ export function Dashboard() {
               onChange={(event) => setAmount(event.target.value)}
             />
             <div className="d-fx-quote" aria-live="polite">
-              <span className="d-section-title">Recipient currency estimate</span>
-              <strong>{fxQuote?.currency === route.currency ? formatLocalAmount(Number(amount), fxQuote) : "—"}</strong>
-              {fxQuote?.currency === route.currency ? <>
-                <span>1 USDC ≈ {formatLocalAmount(1, fxQuote)}</span>
-                <small>Coinbase market rate · fetched {new Date(fxQuote.fetchedAt).toLocaleTimeString()} · refreshes automatically</small>
-              </> : <span>{fxError || "Fetching the current market rate…"}</span>}
-              <small>Settlement is in test USDC. This currency estimate excludes conversion fees and is not a bank payout or a locked exchange quote.</small>
-              <button type="button" className="d-btn d-btn-ghost" disabled={busy} onClick={() => setFxRefresh((value) => value + 1)}>Refresh rate</button>
+              <span className="d-section-title">
+                Recipient currency estimate
+              </span>
+              <strong>
+                {fxQuote?.currency === route.currency
+                  ? formatLocalAmount(Number(amount), fxQuote)
+                  : "—"}
+              </strong>
+              {fxQuote?.currency === route.currency ? (
+                <>
+                  <span>1 USDC ≈ {formatLocalAmount(1, fxQuote)}</span>
+                  <small>
+                    Coinbase market rate · fetched{" "}
+                    {new Date(fxQuote.fetchedAt).toLocaleTimeString()} ·
+                    refreshes automatically
+                  </small>
+                </>
+              ) : (
+                <span>{fxError || "Fetching the current market rate…"}</span>
+              )}
+              <small>
+                Settlement is in test USDC. This currency estimate excludes
+                conversion fees and is not a bank payout or a locked exchange
+                quote.
+              </small>
+              <button
+                type="button"
+                className="d-btn d-btn-ghost"
+                disabled={busy}
+                onClick={() => setFxRefresh((value) => value + 1)}
+              >
+                Refresh rate
+              </button>
             </div>
             <fieldset className="d-vendors">
               <legend>Vendor</legend>
-              <div className="d-vendor-row" role="radiogroup" aria-label="Vendor">
+              <div
+                className="d-vendor-row"
+                role="radiogroup"
+                aria-label="Vendor"
+              >
                 {vendors.map((item) => (
                   <label
                     className={
-                      vendorName === item.name ? "d-vendor is-selected" : "d-vendor"
+                      vendorName === item.name
+                        ? "d-vendor is-selected"
+                        : "d-vendor"
                     }
                     key={item.address}
                   >
@@ -1357,7 +1762,9 @@ export function Dashboard() {
                     <span className="d-vendor-note" title={item.note}>
                       {item.note}
                     </span>
-                    <span className={item.blocked ? "d-tag d-tag-warn" : "d-tag"}>
+                    <span
+                      className={item.blocked ? "d-tag d-tag-warn" : "d-tag"}
+                    >
                       {item.blocked
                         ? "On block list: expect a refusal"
                         : "Registered payout wallet"}
@@ -1366,9 +1773,11 @@ export function Dashboard() {
                 ))}
               </div>
             </fieldset>
-            <button type="button" className="d-btn d-btn-secondary" disabled={busy} onClick={() => run(startVendorVerification)}>Verify selected vendor with Didit</button>
-            {verificationLink?.wallet === vendor.address ? <a className="d-btn d-btn-secondary" href={verificationLink.url} target="_blank" rel="noopener noreferrer">Open Didit verification</a> : null}
-            <p className="d-hint">OFAC screening and Didit approval are required before payment. Keep this page open during verification; refreshing creates new demo vendor wallets.</p>
+            <p className="d-hint">
+              Vendor choices are mock payout wallets. The gate screens the
+              selected wallet against the current OFAC SDN list; the local block
+              list is separate evidence.
+            </p>
             <dl className="d-terms">
               <div>
                 <dt>Category</dt>
@@ -1380,7 +1789,9 @@ export function Dashboard() {
               </div>
               <div>
                 <dt>Corridor</dt>
-                <dd>{route.fromCountry} → {route.toCountry}</dd>
+                <dd>
+                  {route.fromCountry} → {route.toCountry}
+                </dd>
               </div>
               <div>
                 <dt>Invoice</dt>
@@ -1411,7 +1822,8 @@ export function Dashboard() {
                 <div>
                   <dt>Clearance</dt>
                   <dd>
-                    Signed for {baseToUsdc(usdcToBase(Number(amount) || 0))} USDC
+                    Signed for {baseToUsdc(usdcToBase(Number(amount) || 0))}{" "}
+                    USDC
                   </dd>
                 </div>
               ) : null}
@@ -1430,12 +1842,20 @@ export function Dashboard() {
                 type="button"
                 className="d-btn d-btn-secondary"
                 onClick={() => run(deliverAndRelease)}
-                disabled={txOff || !funded || vendor.blocked || funded.vendor !== vendor.address}
+                disabled={
+                  txOff ||
+                  !funded ||
+                  vendor.blocked ||
+                  funded.vendor !== vendor.address
+                }
                 aria-busy={busy}
                 aria-describedby={funded ? undefined : "release-hint"}
               >
                 {busy ? <Spinner /> : null}
-                Deliver and release{funded ? ` · ${funded.route.fromCountry} → ${funded.route.toCountry}` : ""}
+                Deliver and release
+                {funded
+                  ? ` · ${funded.route.fromCountry} → ${funded.route.toCountry}`
+                  : ""}
               </button>
             </div>
             {funded ? null : (
@@ -1450,22 +1870,34 @@ export function Dashboard() {
           <h2 id="attack-title">Try to break it</h2>
           <div className="d-attacks">
             <article>
-              <h3>Swap the vendor</h3>
-              <p>Take a real clearance and change only the vendor bytes.</p>
+              <h3>Test vendor tampering</h3>
+              <p id="vendor-test-hint">
+                Check that changing the vendor invalidates an existing
+                clearance's signature. An invalid signature means protection
+                passed. This local test sends no transaction.
+              </p>
               <button
                 type="button"
                 className="d-btn d-btn-secondary"
                 onClick={() => run(swapVendor)}
-                disabled={txOff}
+                disabled={busy || !lastClearance}
                 aria-busy={busy}
+                aria-describedby="vendor-test-hint"
               >
                 {busy ? <Spinner /> : null}
-                Run the swap
+                Test signature protection
               </button>
+              {!lastClearance ? (
+                <p className="d-hint">
+                  Request a clearance first to enable this test.
+                </p>
+              ) : null}
             </article>
             <article>
               <h3>Disable the corridor</h3>
-              <p>The honest gate refuses. A forced allow can still be signed.</p>
+              <p>
+                The honest gate refuses. A forced allow can still be signed.
+              </p>
               <div className="d-actions">
                 <button
                   type="button"
@@ -1506,7 +1938,9 @@ export function Dashboard() {
                 <button
                   type="button"
                   className="d-btn d-btn-secondary"
-                  onClick={() => run(() => openMandate(session.current.mandateId + 1))}
+                  onClick={() =>
+                    run(() => openMandate(session.current.mandateId + 1))
+                  }
                   disabled={txOff}
                   aria-busy={busy}
                 >
@@ -1542,13 +1976,24 @@ export function Dashboard() {
           ) : null}
           {log.length === 0 && !busy ? (
             <p className="d-empty">
-              Ask for a clearance to see every check, the signed decision and the
-              transaction here.
+              Ask for a clearance to see every check, the signed decision and
+              the transaction here.
             </p>
           ) : null}
-          {banner ? (
-            <p className={`d-banner d-banner-${banner.tone}`} aria-live="polite">
-              <Mark kind={banner.tone === "cleared" ? "pass" : banner.tone === "review" ? "flag" : "fail"} />
+          {banner && banner.tone !== "refused" ? (
+            <p
+              className={`d-banner d-banner-${banner.tone}`}
+              aria-live="polite"
+            >
+              <Mark
+                kind={
+                  banner.tone === "cleared"
+                    ? "pass"
+                    : banner.tone === "review"
+                      ? "flag"
+                      : "fail"
+                }
+              />
               <span>{banner.title}</span>
             </p>
           ) : null}
@@ -1569,7 +2014,9 @@ export function Dashboard() {
                     <div>
                       <h3>
                         {line.title}
-                        {line.count > 1 ? <span className="d-count"> × {line.count}</span> : null}
+                        {line.count > 1 ? (
+                          <span className="d-count"> × {line.count}</span>
+                        ) : null}
                       </h3>
                       <p>{line.detail}</p>
                       {line.signature ? (
@@ -1582,7 +2029,10 @@ export function Dashboard() {
                           >
                             View on Solana Explorer
                           </a>
-                          <CopyButton value={line.signature} label="transaction signature" />
+                          <CopyButton
+                            value={line.signature}
+                            label="transaction signature"
+                          />
                         </p>
                       ) : null}
                       {index === 0 && callFailed && !gateDown ? (
@@ -1603,19 +2053,18 @@ export function Dashboard() {
           ) : null}
           {lastClearance || lastPayment ? (
             <dl className="d-terms d-clearance">
-              {banner ? (
-                <div>
-                  <dt>Decision</dt>
-                  <dd>{banner.title}</dd>
-                </div>
-              ) : null}
               {lastClearance ? (
                 <div>
                   <dt>Signer</dt>
                   <dd>
                     <span className="d-inline-key">
-                      <code title={lastClearance.signer}>{shorten(lastClearance.signer)}</code>
-                      <CopyButton value={lastClearance.signer} label="policy signer on the clearance" />
+                      <code title={lastClearance.signer}>
+                        {shorten(lastClearance.signer)}
+                      </code>
+                      <CopyButton
+                        value={lastClearance.signer}
+                        label="policy signer on the clearance"
+                      />
                     </span>
                   </dd>
                 </div>
@@ -1625,15 +2074,20 @@ export function Dashboard() {
                   <dt>Signature</dt>
                   <dd>
                     <span className="d-inline-key">
-                      <code title={lastClearance.signature}>{shorten(lastClearance.signature)}</code>
-                      <CopyButton value={lastClearance.signature} label="clearance signature" />
+                      <code title={lastClearance.signature}>
+                        {shorten(lastClearance.signature)}
+                      </code>
+                      <CopyButton
+                        value={lastClearance.signature}
+                        label="clearance signature"
+                      />
                     </span>
                   </dd>
                 </div>
               ) : null}
               {lastPayment ? (
                 <div>
-                  <dt>Payment</dt>
+                  <dt>Last funded payment</dt>
                   <dd>
                     <span className="d-inline-key">
                       <code title={lastPayment}>{shorten(lastPayment)}</code>
@@ -1656,7 +2110,6 @@ export function Dashboard() {
             transaction. The explorer link is that transaction.
           </p>
         </aside>
-
       </main>
     </div>
   );
@@ -1665,7 +2118,9 @@ export function Dashboard() {
 function skippedLabel(skipped: number[]) {
   if (skipped.length === 0) return "";
   if (skipped.length === 1) return `Mandate ${skipped[0]} was already stored.`;
-  const contiguous = skipped.every((id, index) => index === 0 || id === skipped[index - 1] + 1);
+  const contiguous = skipped.every(
+    (id, index) => index === 0 || id === skipped[index - 1] + 1
+  );
   const list = contiguous
     ? `${skipped[0]}–${skipped[skipped.length - 1]}`
     : skipped.join(", ");
@@ -1676,7 +2131,7 @@ function groupLog(lines: LogLine[]) {
   const grouped: Array<LogLine & { count: number }> = [];
   for (const line of lines) {
     const existing = grouped.find(
-      (item) => item.title === line.title && item.detail === line.detail,
+      (item) => item.title === line.title && item.detail === line.detail
     );
     if (existing) existing.count += 1;
     else grouped.push({ ...line, count: 1 });
@@ -1697,36 +2152,6 @@ function readable(detail: string) {
 
 function reasonCodesIn(detail: string) {
   return Array.from(new Set(detail.match(/\b[A-Z][A-Z0-9_]{2,}\b/g) ?? []));
-}
-
-function bannerFrom(lines: LogLine[]) {
-  const decision = lines.find((line) =>
-    /Allow|Deny|refused|Revoked|Swapped|Forced/i.test(line.title),
-  );
-  if (!decision) {
-    const review = lines.find((line) => /review/i.test(`${line.title} ${line.detail}`));
-    return review
-      ? { tone: "review" as const, title: "Needs review", detail: review.detail }
-      : null;
-  }
-  const blob = `${decision.title} ${decision.detail}`;
-  if (/Swapped|Deny|refused|Revoked/i.test(decision.title) || /does not verify/i.test(blob)) {
-    return { tone: "refused" as const, title: "Refused", detail: decision.detail };
-  }
-  if (/Allow/i.test(decision.title)) {
-    return { tone: "cleared" as const, title: "Gate approved", detail: `${decision.detail} This approval is not a confirmed transfer; check the transaction steps below.` };
-  }
-  return { tone: "review" as const, title: "Needs review", detail: decision.detail };
-}
-
-function markFor(line: LogLine): "pass" | "flag" | "fail" | "info" {
-  const blob = `${line.title} ${line.detail}`;
-  if (/Adapt|REVIEW|flag/i.test(blob)) return "flag";
-  if (/Deny|refused|fail|does not verify|not running|Could not|nothing to/i.test(blob)) {
-    return "fail";
-  }
-  if (/Allow|verifies|open|signed/i.test(blob)) return "pass";
-  return "info";
 }
 
 function CopyButton({ value, label }: { value: string; label: string }) {
@@ -1768,8 +2193,21 @@ function KeyLine({ label, value }: { label: string; value: string }) {
 function Spinner() {
   return (
     <svg className="d-spin" viewBox="0 0 16 16" aria-hidden="true">
-      <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="2" opacity="0.35" />
-      <path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle
+        cx="8"
+        cy="8"
+        r="6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        opacity="0.35"
+      />
+      <path
+        d="M8 2a6 6 0 0 1 6 6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
     </svg>
   );
 }
@@ -1790,14 +2228,29 @@ function WarnIcon() {
 }
 
 function Dot({ on }: { on: boolean }) {
-  return <span className={on ? "d-dot d-dot-on" : "d-dot"} aria-hidden="true" />;
+  return (
+    <span className={on ? "d-dot d-dot-on" : "d-dot"} aria-hidden="true" />
+  );
 }
 
 function Mark({ kind }: { kind: "pass" | "flag" | "fail" | "info" }) {
-  const label = kind === "pass" ? "Pass" : kind === "flag" ? "Flag" : kind === "fail" ? "Fail" : "Note";
+  const label =
+    kind === "pass"
+      ? "Pass"
+      : kind === "flag"
+        ? "Flag"
+        : kind === "fail"
+          ? "Blocked"
+          : "Note";
   return (
     <span className={`d-mark d-mark-${kind}`}>
-      {kind === "pass" ? "✓" : kind === "fail" ? "!" : kind === "flag" ? "•" : "–"}
+      {kind === "pass"
+        ? "✓"
+        : kind === "fail"
+          ? "!"
+          : kind === "flag"
+            ? "•"
+            : "–"}
       <span className="d-mark-label">{label}</span>
     </span>
   );

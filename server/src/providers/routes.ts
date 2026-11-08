@@ -1,9 +1,6 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import { ApiError } from "../lib/api-error.ts";
-import type { Profile } from "../lib/repository.ts";
-import { requireProfile, requireRole } from "../middleware/dashboard.ts";
 import { randomUUID } from "node:crypto";
 import { sqliteProviderStore, type ProviderStore } from "./store.ts";
 import { runProviderGate } from "./gate.ts";
@@ -31,10 +28,6 @@ export type ProviderRouteDeps = {
     wallet: string;
     reasonCode: string;
   }) => Promise<void>;
-  getDashboardUser?: (
-    token: string
-  ) => Promise<{ id: string; email: string } | null>;
-  getProfile?: (userId: string) => Promise<Profile | null>;
 };
 
 export function registerProviderRoutes(
@@ -71,27 +64,6 @@ export function registerProviderRoutes(
       sanctions: { reachable: sanctions },
       identity: { reachable: identity },
     };
-  });
-
-  app.post("/vendors/:wallet/verification", async (request, reply) => {
-    try {
-      const user = await owner(request);
-      requireRole(user, ["owner"]);
-      const params = z.object({ wallet: pubkey }).safeParse(request.params);
-      if (!params.success) return reply.code(400).send({ error: "VALIDATION" });
-      const session = await deps.identity.createSession(params.data.wallet);
-      await store.saveIdentity({
-        vendorWallet: params.data.wallet,
-        provider: "didit",
-        sessionId: session.sessionId,
-        status: session.status,
-        expiresAt: null,
-        updatedAt: new Date(now() * 1000).toISOString(),
-      });
-      return { url: session.url, sessionId: session.sessionId };
-    } catch (error) {
-      return fail(reply, error);
-    }
   });
 
   app.register(async (scope) => {
@@ -152,13 +124,6 @@ export function registerProviderRoutes(
       return { ok: true };
     });
   });
-
-  async function owner(request: FastifyRequest): Promise<Profile> {
-    if (!deps.getDashboardUser || !deps.getProfile) {
-      throw new ApiError(401, "UNAUTHORIZED");
-    }
-    return requireProfile(request, deps.getDashboardUser, deps.getProfile);
-  }
 }
 
 async function reach(run: () => Promise<unknown>): Promise<boolean> {
@@ -168,11 +133,4 @@ async function reach(run: () => Promise<unknown>): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function fail(reply: FastifyReply, error: unknown) {
-  if (error instanceof ApiError) {
-    return reply.code(error.statusCode).send({ error: error.code });
-  }
-  return reply.code(503).send({ error: "CHECK_UNAVAILABLE" });
 }

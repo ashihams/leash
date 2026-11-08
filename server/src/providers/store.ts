@@ -69,35 +69,31 @@ export function supabaseProviderStore(client: SupabaseClient): ProviderStore {
     },
     async saveIdentity(row) {
       checked(
-        await client
-          .from("identity_verifications")
-          .upsert({
-            vendor_wallet: row.vendorWallet,
-            provider: row.provider,
-            session_id: row.sessionId,
-            status: row.status,
-            expires_at: row.expiresAt,
-            updated_at: row.updatedAt,
-          })
+        await client.from("identity_verifications").upsert({
+          vendor_wallet: row.vendorWallet,
+          provider: row.provider,
+          session_id: row.sessionId,
+          status: row.status,
+          expires_at: row.expiresAt,
+          updated_at: row.updatedAt,
+        })
       );
     },
     async insertCheck(row) {
       checked(
-        await client
-          .from("gate_provider_checks")
-          .insert({
-            id: row.id,
-            payment_id: row.paymentId,
-            wallet: row.wallet,
-            check_id: row.checkId,
-            status: row.status,
-            reason_code: row.reasonCode,
-            evidence_hash: row.evidenceHash,
-            provider: row.provider,
-            environment: row.environment,
-            public_note: row.publicNote ?? "",
-            created_at: row.createdAt,
-          })
+        await client.from("gate_provider_checks").insert({
+          id: row.id,
+          payment_id: row.paymentId,
+          wallet: row.wallet,
+          check_id: row.checkId,
+          status: row.status,
+          reason_code: row.reasonCode,
+          evidence_hash: row.evidenceHash,
+          provider: row.provider,
+          environment: row.environment,
+          public_note: row.publicNote ?? "",
+          created_at: row.createdAt,
+        })
       );
     },
     async listChecks(paymentId) {
@@ -120,32 +116,28 @@ export function supabaseProviderStore(client: SupabaseClient): ProviderStore {
       }));
     },
     async insertEvent(row) {
-      const result = await client
-        .from("webhook_events")
-        .insert({
-          id: row.id,
-          provider: row.provider,
-          session_id: row.sessionId,
-          received_at: row.receivedAt,
-          verified: true,
-        });
+      const result = await client.from("webhook_events").insert({
+        id: row.id,
+        provider: row.provider,
+        session_id: row.sessionId,
+        received_at: row.receivedAt,
+        verified: true,
+      });
       if (result.error?.code === "23505") return false;
       checked(result);
       return true;
     },
     async insertAudit(row) {
       checked(
-        await client
-          .from("audit_log")
-          .insert({
-            id: row.id,
-            actor_type: row.actorType,
-            actor_id: row.actorId,
-            action: row.action,
-            payment_id: row.paymentId,
-            details: row.details,
-            created_at: row.createdAt,
-          })
+        await client.from("audit_log").insert({
+          id: row.id,
+          actor_type: row.actorType,
+          actor_id: row.actorId,
+          action: row.action,
+          payment_id: row.paymentId,
+          details: row.details,
+          created_at: row.createdAt,
+        })
       );
     },
   };

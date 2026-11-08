@@ -552,6 +552,27 @@ fn clearance_layout_is_fixed_at_288_bytes() {
 }
 
 #[test]
+fn compromised_agent_full_budget_proposal_cannot_fund() {
+    // Same attacker and full-budget proposal as POST /agent/run simulation.
+    // Test-only signing deliberately attempts to bypass the HTTP gate so the
+    // deployed program must enforce its own existing boundaries as well.
+    let mut env = setup();
+    let attacker = Pubkey::from_str_const("2VwugjK6VhAJmsP8kKr71PZvjEPiqdN3snNW1v5bMXzn");
+    env.svm.airdrop(&attacker, SOL).unwrap();
+    let vault = pda(&[b"treasury-vault", env.mandate.as_ref()]);
+    let before = token_amount(&env.svm, &vault);
+    let denied = clearance(&env, KIND_FUND, DECISION_DENY, payment_id(90), BUDGET, attacker, env.mint);
+    assert!(fund(&mut env, &denied, attacker).is_err());
+    assert!(env.svm.get_account(&pda(&[b"escrow", &denied.payment_id])).is_none());
+
+    let forced_allow = clearance(&env, KIND_FUND, DECISION_ALLOW, payment_id(91), BUDGET, attacker, env.mint);
+    assert_msg(fund(&mut env, &forced_allow, attacker).unwrap_err(), "PAYMENT_LIMIT_EXCEEDED");
+    assert!(env.svm.get_account(&pda(&[b"escrow", &forced_allow.payment_id])).is_none());
+    assert_eq!(token_amount(&env.svm, &vault), before);
+    assert!(env.svm.get_account(&ata(&attacker, &env.mint)).is_none());
+}
+
+#[test]
 fn funds_releases_and_rejects_a_second_release() {
     let mut env = setup();
     let payment = payment_id(1);

@@ -1,10 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { type IdentityRow } from "../db.ts";
 import { sqliteProviderStore, type ProviderStore } from "./store.ts";
 import { evidenceHash } from "./evidence.ts";
-import { ProviderHttpError } from "./http.ts";
-import { identityCheck } from "./identity.ts";
 import { OfacScreenError } from "./ofac.ts";
 import type {
   IdentityVerificationProvider,
@@ -64,8 +61,9 @@ export async function runProviderGate(input: {
         sanctionsReason = "CHECK_UNAVAILABLE";
         unavailableReason = "CHECK_UNAVAILABLE";
       }
-    } else if (!(error instanceof ProviderHttpError)) {
-      throw error;
+    } else {
+      sanctionsReason = "CHECK_UNAVAILABLE";
+      unavailableReason = "CHECK_UNAVAILABLE";
     }
   }
   await record(store, {
@@ -87,59 +85,12 @@ export async function runProviderGate(input: {
     return { ok: false, unavailable: true, reason: unavailableReason };
   }
 
-  let identity = await store.getIdentity(input.vendor);
-  if (identity) {
-    try {
-      const live = await input.identity.getDecision(
-        identity.sessionId,
-        input.vendor
-      );
-      identity = { ...identity, status: live.status, updatedAt: createdAt };
-      await store.saveIdentity(identity);
-    } catch {
-      await record(store, {
-        paymentId: input.paymentId,
-        wallet: input.vendor,
-        checkId: "identity",
-        status: "fail",
-        reasonCode: "CHECK_UNAVAILABLE",
-        evidenceHash: evidenceHash({ error: "CHECK_UNAVAILABLE" }),
-        provider: "didit",
-        environment: input.environment,
-        createdAt,
-      });
-      return { ok: false, unavailable: true, reason: "CHECK_UNAVAILABLE" };
-    }
-  }
-  const identityResult = identityCheck({
-    record: identity
-      ? { status: identity.status, expiresAt: identity.expiresAt }
-      : null,
-    nowMs: input.nowMs,
-  });
-  await record(store, {
-    paymentId: input.paymentId,
-    wallet: input.vendor,
-    checkId: "identity",
-    status: identityResult.status,
-    reasonCode: identityResult.reasonCode,
-    evidenceHash: evidenceHash(identitySummary(identity)),
-    provider: "didit",
-    environment: input.environment,
-    createdAt,
-  });
-
-  const reasons = [sanctionsReason, identityResult.reasonCode].filter(
-    (reason) => reason.length > 0
-  );
-  const flagged = identityResult.status === "flag";
-  const failed = sanctionsStatus === "fail" || identityResult.status === "fail";
-  if (!failed && !flagged) return { ok: true };
+  if (sanctionsStatus === "pass") return { ok: true };
   return {
     ok: false,
     unavailable: false,
-    reasons,
-    checkStatus: failed ? "fail" : "flag",
+    reasons: [sanctionsReason],
+    checkStatus: "fail",
   };
 }
 
@@ -151,17 +102,6 @@ function publicNote(raw: unknown): string {
     return `sdn_entry_id ${record.sdn_entry_id}, currency ${String(record.currency)}, sha256 ${String(record.sha256)}`;
   }
   return "";
-}
-
-function identitySummary(row: IdentityRow | undefined) {
-  if (!row) return { present: false };
-  return {
-    present: true,
-    provider: row.provider,
-    sessionId: row.sessionId,
-    status: row.status,
-    expiresAt: row.expiresAt,
-  };
 }
 
 async function record(

@@ -20,9 +20,10 @@ import {
   pipe,
 } from "@solana/kit";
 import { CROSS_BORDER_ROUTES, countrySeed } from "../src/leash/corridors.ts";
+import { DEVNET_RPC, PROGRAM_ID } from "../src/leash/deployment.ts";
 
-const rpc = createSolanaRpc("https://api.devnet.solana.com");
-const program = address("8Eq2Ug3URR5ugzDfjYk4bbkBJa8o7U6YZtPp6vLDHezd");
+const rpc = createSolanaRpc(DEVNET_RPC);
+const program = address(PROGRAM_ID);
 const admin = address("8ZBVLivQLgxqUpxV9z8nLWJZwpvZsXqgMmXJkAUavwrU");
 const send = process.argv.includes("--send");
 if (

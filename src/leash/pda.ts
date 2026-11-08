@@ -5,7 +5,7 @@ import {
   getProgramDerivedAddress,
   type Address,
 } from "@solana/kit";
-import { PROGRAM_ID } from "./client.ts";
+import { PROGRAM_ID } from "./deployment.ts";
 
 export async function mandatePda(
   owner: string,
