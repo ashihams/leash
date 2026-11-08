@@ -913,5 +913,25 @@ function readCorridors(
 }
 
 function isUnique(error: unknown): boolean {
-  return error instanceof Error && error.message.includes("UNIQUE");
+  if (typeof error === "object" && error !== null) {
+    const err = error as {
+      message?: unknown;
+      code?: unknown;
+      details?: unknown;
+    };
+    const code = String(err.code ?? "");
+    const msg =
+      `${String(err.message ?? "")} ${String(err.details ?? "")}`.toLowerCase();
+    if (code === "23505" || code === "SQLITE_CONSTRAINT_UNIQUE") return true;
+    if (
+      msg.includes("unique") ||
+      msg.includes("duplicate") ||
+      msg.includes("already exists") ||
+      msg.includes("primary key") ||
+      msg.includes("23505")
+    ) {
+      return true;
+    }
+  }
+  return false;
 }

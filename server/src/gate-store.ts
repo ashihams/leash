@@ -132,8 +132,18 @@ function num(value: unknown): number {
   return typeof value === "number" ? value : Number(value);
 }
 
-function must<T>(result: { data: T; error: { message: string } | null }): T {
-  if (result.error) throw new Error(result.error.message);
+function must<T>(result: {
+  data: T;
+  error: { message: string; code?: string; details?: string } | null;
+}): T {
+  if (result.error) {
+    const error = new Error(result.error.message);
+    (error as unknown as { code?: string; details?: string }).code =
+      result.error.code;
+    (error as unknown as { code?: string; details?: string }).details =
+      result.error.details;
+    throw error;
+  }
   return result.data;
 }
 

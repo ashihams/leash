@@ -663,10 +663,19 @@ export function Dashboard() {
             toCountry,
           })),
         });
-        if (
-          created.status === 409 &&
-          errorText(created).includes("MANDATE_EXISTS")
-        ) {
+        const err = errorText(created).toLowerCase();
+        const isDuplicate =
+          created.status === 409 ||
+          err.includes("mandate_exists") ||
+          err.includes("unique") ||
+          err.includes("duplicate") ||
+          err.includes("already exists") ||
+          (created.status === 500 &&
+            (err.includes("unique") ||
+              err.includes("duplicate") ||
+              err.includes("key") ||
+              err.includes("exists")));
+        if (isDuplicate) {
           skipped.push(id);
           id += 1;
           continue;
@@ -2253,7 +2262,16 @@ function Mark({ kind }: { kind: "pass" | "flag" | "fail" | "info" }) {
 function reasonsOf(result: GateResult): string[] {
   const reasons = result.body.reasons;
   if (Array.isArray(reasons)) return reasons.map(String);
-  if (typeof result.body.error === "string") return [result.body.error];
+  if (typeof result.body.error === "string") {
+    if (
+      typeof result.body.message === "string" &&
+      result.body.message !== result.body.error
+    ) {
+      return [`${result.body.error}: ${result.body.message}`];
+    }
+    return [result.body.error];
+  }
+  if (typeof result.body.message === "string") return [result.body.message];
   return [];
 }
 
